@@ -1,46 +1,47 @@
-# AICBaseline
+# OpticaLynx — C1 Baseline
 
-The production indexing + retrieval + submission pipeline for the AIC
-video-retrieval competition. Reads from `AICData`/`NewData`, builds a
-FAISS + SQLite index over CLIP ViT-B/32 features, and answers KIS queries
-(VQA/TRAKE planned) against it.
+Minimal end-to-end video moment retrieval baseline (AIC 2026 KIS/VQA path):
+index → text query → ranked keyframe results → Streamlit UI. Full spec at
+[`docs/c1-baseline-spec.md`](docs/c1-baseline-spec.md). Everything is
+embedded/file-based — no server processes.
 
 ## Layout
 
 ```
-pipeline/   the actual pipeline, in order (Step 1-4 + query side)
-index/      built FAISS index + SQLite DB (generated, not source)
-debug/      one-off sanity-check script, not part of the pipeline
+pipeline/
+  config.py          paths + constants (dataset roots, index paths, model id)
+  viclip_encoder.py  ViCLIP-OT text tower (query-time text -> 768-d vector)
+  loader.py          per-video frame embeddings + timestamp join
+  detections.py      filtered_detections.csv -> class vocabulary + per-frame labels
+  store.py           SQLite metadata (videos, keyframes, classes, frame_classes,
+                      keyframe_text FTS5 w/ trigram + diacritic-folded search)
+  index_pipeline.py  builds both FAISS indices + the SQLite store
+  fusion.py          Reciprocal Rank Fusion (k=60) — isolated, swappable
+  retrieve.py         query pipeline: encode -> search (x2) + FTS5 -> fuse -> enrich
+ui/
+  app.py             Streamlit UI
+index/               generated FAISS indices + SQLite DB (git-ignored)
+old_version/         the prior CLIP ViT-B/32 pipeline — reference only, not run
 ```
 
-## `pipeline/`
+## Data
+
+- `AICDataExtracted/embeddings/{video_id}_viclip768.npy` + `_filenames.csv` —
+  ViCLIP-OT frame embeddings (768-d)
+- `AICDataExtracted/filtered_detections.csv` — object detections
+- `AICData/map-keyframes/{video_id}.csv` — reused for per-frame timestamps
+  (row-aligned 1:1 with the embeddings)
+- `AICData/keyframes/{video_id}/{filename}` — reused, best-effort, for
+  UI thumbnails
+- OCR / captions / ASR: not available yet — the corresponding legs
+  (object-class index, FTS5 text search) degrade gracefully when empty.
+
+## Usage
 
 ```
-loader.py          Step 1 — load/join one video's per-source files (CLIP .npy, keyframe CSV, media-info, objects)
-clean_objects.py    Step 2 — clean raw object-detection JSON into indexable labels
-index_pipeline.py   Step 3 — build/extend the FAISS + SQLite index (--incremental default, --rebuild to start over)
-store.py            SQLite metadata store, keyed by global_id (== FAISS row id)
-text_encoder.py      query string -> 512-d CLIP-space vector (multilingual-CLIP, handles Vietnamese natively)
-retrieve.py          query-side KIS search (VQA/TRAKE not yet implemented)
-submission.py        writes ranked results to the competition's on-disk submission format
+python pipeline/index_pipeline.py                 # full rebuild, all videos
+python pipeline/index_pipeline.py --limit 5        # quick dev subset
+python pipeline/store.py --stats
+python pipeline/retrieve.py "một người đàn ông đang lái xe máy"
+streamlit run ui/app.py
 ```
-
-Run from anywhere — `--faiss-path`/`--db-path` default to `../index/` relative
-to `pipeline/` regardless of your working directory, e.g.:
-```
-python pipeline/retrieve.py kis "<query>" --faiss-path index/clip_features_flat_ip.index --db-path index/aic_metadata.db
-```
-(or just omit both flags and let the defaults resolve to `index/`).
-
-## `index/`
-
-`aic_metadata.db` (34MB) + `clip_features_flat_ip.index` (347MB) — the
-current, full-dataset build produced by `pipeline/index_pipeline.py`.
-Generated, not hand-edited; not required to exist before a fresh
-`--rebuild` run.
-
-## `debug/`
-
-`check.py` — a quick standalone sanity check (counts total CLIP vectors
-under `AICData/clip-features-32`, independent of the built index). Not
-part of the pipeline.

@@ -1,178 +1,117 @@
 """
-loader.py — Step 1: load and join one video's per-source files into a flat
-list of per-keyframe records.
+loader.py — Step 1: load one video's ViCLIP-OT frame embeddings, joined with
+timestamps when available.
 
-Dataset layout expected under `dataset_root` (see AICData):
-    clip-features-32/{video_id}.npy   CLIP ViT-B/32 vectors, shape (num_keyframes, 512), float16, L2-normalized
-    map-keyframes/{video_id}.csv      columns: n, pts_time, fps, frame_idx (one row per keyframe)
-    media-info/{video_id}.json        video-level YouTube metadata (title, description, ...) — MAY BE ABSENT
-    objects/{video_id}/{n:03d}.json   per-keyframe object detections (n is 1-indexed)
-    keyframes/{video_id}/{n:03d}.jpg  the actual keyframe image (referenced, not loaded)
+Reads AICDataExtracted/embeddings/{video_id}_viclip768.npy (N, 768) plus its
+sibling _filenames.csv (row_index, filename), and, best-effort, joins by row
+index against AICData/map-keyframes/{video_id}.csv (n, pts_time, fps,
+frame_idx) -- verified during planning to line up 1:1, in order, with the
+new embeddings for every video checked.
 
-This module only joins — it doesn't clean/filter/index anything. It raises
-on the one invariant that actually matters (npy/csv row-count mismatch,
-which would silently misalign every downstream frame_id); callers decide
-what "raise" means for their run (index_pipeline.py catches it and skips
-the video rather than aborting the whole batch).
-
-Missing media-info is NOT an error — some videos genuinely lack it per the
-organizer's own docs — `video_meta` is just `{}` in that case, and callers
-must treat metadata fields as optional display sugar, never required.
+A missing/misaligned map-keyframes file is tolerated (per spec: "tolerate
+partial data") -- the video is still indexed, just with null timestamps. A
+row-count mismatch between the .npy and its own _filenames.csv is NOT
+tolerated: that would mean the frame vectors and their filenames are already
+out of sync in the source data, which is a real correctness invariant.
 """
 
-import json
-from concurrent.futures import ThreadPoolExecutor
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# Reading one keyframe's object-detection json is a tiny amount of CPU work
-# behind a real filesystem round-trip (open+read+close, often also an AV
-# scan on Windows) -- at ~200 keyframes/video x 873 videos = ~177K of these,
-# doing them one at a time serializes on I/O wait, not CPU. Threads are the
-# right tool here (not multiprocessing): each read releases the GIL while
-# blocked on I/O, so this parallelizes real wall-clock time without any
-# pickling/process-startup overhead. 32 is a reasonable default for local
-# SSD/spinning-disk queue depths; bump it if profiling shows headroom.
-DEFAULT_IO_WORKERS = 32
+import config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class KeyframeRecord:
-    """One row = one keyframe, fully joined across all source files."""
     video_id: str
-    n: int                       # 1-indexed keyframe number (CSV / object-json filename)
-    npy_row: int                 # 0-indexed row into the video's .npy array
-    pts_time: float              # timestamp in seconds
-    frame_idx: int               # THE value submitted to the competition, not n
-    fps: float
-    clip_vector: np.ndarray      # shape (512,), float32
-    raw_objects: dict            # untouched contents of the per-keyframe object json ({} if missing)
-    image_path: str              # e.g. "keyframes/L21_V001/003.jpg", reference only
+    row_index: int          # 0-indexed, == npy row == filenames.csv row_index
+    filename: str            # e.g. "001.jpg"
+    embedding: np.ndarray     # (768,) float32
+    pts_time: float | None
+    fps: float | None
+    frame_idx: int | None    # competition-submission frame index, if known
+    n: int | None            # 1-indexed keyframe number from map-keyframes, if known
 
 
 @dataclass
 class VideoLoadResult:
     video_id: str
-    records: list                # list[KeyframeRecord]
-    video_meta: dict             # untouched media-info contents ({} if the file is absent)
-    has_media_info: bool
+    records: list
+    has_timestamps: bool
 
 
-def _object_json_path(objects_dir: Path, video_id: str, n: int) -> Path:
-    """Object detection files are zero-padded to 3 digits, e.g. n=1 -> '001.json'."""
-    return objects_dir / video_id / f"{n:03d}.json"
+def discover_video_ids(embeddings_dir: Path = config.EMBEDDINGS_DIR) -> list:
+    return sorted(
+        p.name[: -len("_viclip768.npy")]
+        for p in embeddings_dir.glob("*_viclip768.npy")
+    )
 
 
-def _read_object_json(obj_path: Path, require: bool) -> dict:
-    """Single-file read for one keyframe's object detections. Tries the open
-    directly (one syscall) instead of exists()-then-open (two) — at ~177K
-    calls across the corpus that halves the syscall count for the common
-    (file present) case."""
-    try:
-        with open(obj_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        if require:
-            raise FileNotFoundError(f"missing object json: {obj_path}") from None
-        return {}
+def _load_timestamps(video_id: str, timestamp_root: Path, expected_rows: int):
+    """Returns a list of (pts_time, fps, frame_idx, n) aligned 1:1 with
+    embedding row_index, or None if no usable timestamp file was found."""
+    csv_path = timestamp_root / f"{video_id}.csv"
+    if not csv_path.exists():
+        return None
+    ts = pd.read_csv(csv_path)
+    if len(ts) != expected_rows:
+        logger.warning(
+            "video_id=%s: map-keyframes row count (%d) != embeddings row count (%d); "
+            "indexing without timestamps",
+            video_id, len(ts), expected_rows,
+        )
+        return None
+    ts = ts.sort_values("n").reset_index(drop=True)
+    return list(zip(ts["pts_time"], ts["fps"], ts["frame_idx"], ts["n"]))
 
 
 def load_video(
     video_id: str,
-    dataset_root: Path,
-    require_objects: bool = True,
-    io_workers: int = DEFAULT_IO_WORKERS,
+    dataset_root: Path = config.FRAME_DATA_ROOT,
+    timestamp_root: Path = config.TIMESTAMP_ROOT,
 ) -> VideoLoadResult:
-    """
-    Load and join all data for a single video_id.
+    embeddings_dir = dataset_root / "embeddings"
+    npy_path = embeddings_dir / f"{video_id}_viclip768.npy"
+    filenames_path = embeddings_dir / f"{video_id}_viclip768_filenames.csv"
 
-    Raises AssertionError if the CLIP vector count and CSV row count
-    disagree, or FileNotFoundError if an expected object-detection json is
-    missing and require_objects=True — both real correctness checks worth
-    keeping loud rather than silently producing misaligned data.
+    if not npy_path.exists() or not filenames_path.exists():
+        raise FileNotFoundError(f"missing embeddings for video_id={video_id!r}")
 
-    The per-keyframe object-detection json reads (one small file per
-    keyframe, ~200/video) are the dominant cost at full-corpus scale and are
-    I/O-bound, not CPU-bound, so they're fanned out across io_workers threads
-    (set io_workers=1 to force serial reads, e.g. for debugging).
-    """
-    dataset_root = Path(dataset_root)
-    npy_path = dataset_root / "clip-features-32" / f"{video_id}.npy"
-    csv_path = dataset_root / "map-keyframes" / f"{video_id}.csv"
-    meta_path = dataset_root / "media-info" / f"{video_id}.json"
-    objects_dir = dataset_root / "objects"
+    vectors = np.load(npy_path)
+    filenames_df = pd.read_csv(filenames_path).sort_values("row_index").reset_index(drop=True)
 
-    vecs = np.load(npy_path).astype("float32")  # cast up from float16 for FAISS
-    csv = pd.read_csv(csv_path)
+    if len(filenames_df) != vectors.shape[0]:
+        raise AssertionError(
+            f"video_id={video_id!r}: npy has {vectors.shape[0]} rows but "
+            f"filenames.csv has {len(filenames_df)} rows"
+        )
 
-    assert len(vecs) == len(csv), (
-        f"[{video_id}] keyframe count mismatch: npy has {len(vecs)} rows, csv has {len(csv)} rows"
-    )
-
-    has_media_info = meta_path.exists()
-    if has_media_info:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            video_meta = json.load(f)
-    else:
-        video_meta = {}
-
-    ns = [int(n) for n in csv["n"]]
-    obj_paths = [_object_json_path(objects_dir, video_id, n) for n in ns]
-
-    if io_workers > 1:
-        with ThreadPoolExecutor(max_workers=io_workers) as pool:
-            try:
-                raw_objects_list = list(
-                    pool.map(lambda p: _read_object_json(p, require_objects), obj_paths)
-                )
-            except FileNotFoundError as e:
-                raise FileNotFoundError(f"[{video_id}] {e}") from None
-    else:
-        try:
-            raw_objects_list = [_read_object_json(p, require_objects) for p in obj_paths]
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"[{video_id}] {e}") from None
+    timestamps = _load_timestamps(video_id, timestamp_root, expected_rows=vectors.shape[0])
 
     records = []
-    for row_i, (_, row) in enumerate(csv.iterrows()):
-        n = ns[row_i]
-        npy_row = n - 1  # csv is 1-indexed, npy is 0-indexed
-
+    for row_index, filename in enumerate(filenames_df["filename"]):
+        if timestamps is not None:
+            pts_time, fps, frame_idx, n = timestamps[row_index]
+            pts_time, fps, frame_idx, n = float(pts_time), float(fps), int(frame_idx), int(n)
+        else:
+            pts_time = fps = frame_idx = n = None
         records.append(
             KeyframeRecord(
                 video_id=video_id,
+                row_index=row_index,
+                filename=filename,
+                embedding=vectors[row_index].astype("float32"),
+                pts_time=pts_time,
+                fps=fps,
+                frame_idx=frame_idx,
                 n=n,
-                npy_row=npy_row,
-                pts_time=float(row["pts_time"]),
-                frame_idx=int(row["frame_idx"]),
-                fps=float(row["fps"]),
-                clip_vector=vecs[npy_row],
-                raw_objects=raw_objects_list[row_i],
-                image_path=f"keyframes/{video_id}/{n:03d}.jpg",
             )
         )
 
-    return VideoLoadResult(
-        video_id=video_id,
-        records=records,
-        video_meta=video_meta,
-        has_media_info=has_media_info,
-    )
-
-
-def discover_video_ids(dataset_root: Path) -> list:
-    """All video_ids present on disk, derived from clip-features-32/*.npy filenames."""
-    npy_folder = Path(dataset_root) / "clip-features-32"
-    return sorted(p.stem for p in npy_folder.glob("*.npy"))
-
-
-def seconds_to_nearest_record(records: list, timestamp_sec: float):
-    """Given a timestamp (e.g. an ASR segment start) within ONE video's
-    records, find the nearest keyframe by pts_time. Caller is responsible
-    for passing records already restricted to a single video_id."""
-    if not records:
-        raise ValueError("seconds_to_nearest_record: empty records list")
-    return min(records, key=lambda r: abs(r.pts_time - timestamp_sec))
+    return VideoLoadResult(video_id=video_id, records=records, has_timestamps=timestamps is not None)

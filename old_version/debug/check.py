@@ -1,7 +1,7 @@
 from pathlib import Path
 import numpy as np
 
-folder_path = Path(r"D:\University\Summer 26\AICData\clip-features-32")
+folder_path = Path(r"D:\University\Summ26\AICData\clip-features-32")
 
 total_vectors = 0
 
