@@ -1,31 +1,21 @@
-# Core data / indexing
 numpy>=2.0
 pandas>=2.0
 faiss-cpu>=1.7.4
 
-# CLIP (image tower is fixed to match the organizer-provided .npy features —
-# do not swap this for a different checkpoint without re-extracting all
-# clip-features-32/*.npy files)
-torch>=2.0
-torchvision>=0.15
-clip @ git+https://github.com/openai/CLIP.git
+# ViCLIP-OT (minhnguyent546/ViCLIP-OT, arXiv:2602.22678) -- loaded via
+# transformers.AutoModel(..., trust_remote_code=True). timm/pillow are
+# needed because AutoModel instantiates the full model (image + text
+# tower), even though this pipeline only calls encode_text at runtime.
+torch>=2.8.0
+torchvision>=0.23.0
+transformers>=4.57.0
+timm
+pillow
 
-# Vietnamese query support — see text_encoder.py
-deep-translator>=1.11   # translate-then-embed fallback path
-ftfy>=6.0                # required by openai/CLIP's tokenizer
-regex>=2023.0            # required by openai/CLIP's tokenizer
-
-# Multilingual CLIP (default text encoder — see text_encoder.py's mclip path)
-# transformers is pinned exactly: text_encoder.py works around a real
-# incompatibility between multilingual-clip's (unmaintained since ~2022)
-# internal from_pretrained() usage and transformers>=5's meta-device
-# loading path. Older transformers releases aren't a viable downgrade on
-# this Python version either (their tokenizers pin has no prebuilt wheel
-# here and fails building from source without a Rust toolchain) -- so this
-# pin + the workaround in text_encoder.py._get_mclip() go together; don't
-# change one without re-verifying the other.
-multilingual-clip==1.0.10
-transformers==5.14.1
-sentencepiece>=0.2
+streamlit>=1.30
 
 tqdm>=4.60
+
+# old_version/ (the prior CLIP ViT-B/32 pipeline, kept for reference only
+# and not run by anything above) needs its own, different dependency set --
+# see git history for the original requirements.txt if it's ever run again.
