@@ -1,18 +1,24 @@
 """
-loader.py — Step 1: load one video's ViCLIP-OT frame embeddings, joined with
-timestamps when available.
+loader.py — Step 1: load one video's frame embeddings, joined with
+timestamps when available. Two backends, sharing everything except how the
+raw vectors + filenames are read:
 
-Reads AICDataExtracted/embeddings/{video_id}_viclip768.npy (N, 768) plus its
-sibling _filenames.csv (row_index, filename), and, best-effort, joins by row
-index against AICData/map-keyframes/{video_id}.csv (n, pts_time, fps,
-frame_idx) -- verified during planning to line up 1:1, in order, with the
-new embeddings for every video checked.
+  load_video_viclip        AICDataExtracted/embeddings/{video}_viclip768.npy
+                            + its own _filenames.csv
+  load_video_clip_vitb32   AICData/clip-features-32/{video}.npy (float16,
+                            no companion filenames file -- filenames are
+                            derived from the map-keyframes row number, e.g.
+                            n=207 -> "207.jpg", the same convention the
+                            ViCLIP-OT filenames.csv uses)
 
-A missing/misaligned map-keyframes file is tolerated (per spec: "tolerate
-partial data") -- the video is still indexed, just with null timestamps. A
-row-count mismatch between the .npy and its own _filenames.csv is NOT
-tolerated: that would mean the frame vectors and their filenames are already
-out of sync in the source data, which is a real correctness invariant.
+Both are joined by row index against AICData/map-keyframes/{video_id}.csv
+(n, pts_time, fps, frame_idx) -- verified to line up 1:1, in order, for
+every video, against BOTH embedding sources. A missing/misaligned
+map-keyframes file is tolerated (per spec: "tolerate partial data") -- the
+video is still indexed, just with null timestamps. A row-count mismatch
+between a backend's own vectors and its own filename source IS NOT
+tolerated: that would mean the frame vectors and their identities are
+already out of sync in the source data, a real correctness invariant.
 """
 
 import logging
@@ -32,7 +38,7 @@ class KeyframeRecord:
     video_id: str
     row_index: int          # 0-indexed, == npy row == filenames.csv row_index
     filename: str            # e.g. "001.jpg"
-    embedding: np.ndarray     # (768,) float32
+    embedding: np.ndarray     # (dim,) float32
     pts_time: float | None
     fps: float | None
     frame_idx: int | None    # competition-submission frame index, if known
@@ -71,31 +77,13 @@ def _load_timestamps(video_id: str, timestamp_root: Path, expected_rows: int):
     return list(zip(ts["pts_time"], ts["fps"], ts["frame_idx"], ts["n"]))
 
 
-def load_video(
-    video_id: str,
-    dataset_root: Path = config.FRAME_DATA_ROOT,
-    timestamp_root: Path = config.TIMESTAMP_ROOT,
+def _build_result(
+    video_id: str, vectors: np.ndarray, filenames: list, timestamp_root: Path
 ) -> VideoLoadResult:
-    embeddings_dir = dataset_root / "embeddings"
-    npy_path = embeddings_dir / f"{video_id}_viclip768.npy"
-    filenames_path = embeddings_dir / f"{video_id}_viclip768_filenames.csv"
-
-    if not npy_path.exists() or not filenames_path.exists():
-        raise FileNotFoundError(f"missing embeddings for video_id={video_id!r}")
-
-    vectors = np.load(npy_path)
-    filenames_df = pd.read_csv(filenames_path).sort_values("row_index").reset_index(drop=True)
-
-    if len(filenames_df) != vectors.shape[0]:
-        raise AssertionError(
-            f"video_id={video_id!r}: npy has {vectors.shape[0]} rows but "
-            f"filenames.csv has {len(filenames_df)} rows"
-        )
-
     timestamps = _load_timestamps(video_id, timestamp_root, expected_rows=vectors.shape[0])
 
     records = []
-    for row_index, filename in enumerate(filenames_df["filename"]):
+    for row_index, filename in enumerate(filenames):
         if timestamps is not None:
             pts_time, fps, frame_idx, n = timestamps[row_index]
             pts_time, fps, frame_idx, n = float(pts_time), float(fps), int(frame_idx), int(n)
@@ -115,3 +103,41 @@ def load_video(
         )
 
     return VideoLoadResult(video_id=video_id, records=records, has_timestamps=timestamps is not None)
+
+
+def load_video_viclip(
+    video_id: str,
+    dataset_root: Path = config.FRAME_DATA_ROOT,
+    timestamp_root: Path = config.TIMESTAMP_ROOT,
+) -> VideoLoadResult:
+    embeddings_dir = dataset_root / "embeddings"
+    npy_path = embeddings_dir / f"{video_id}_viclip768.npy"
+    filenames_path = embeddings_dir / f"{video_id}_viclip768_filenames.csv"
+
+    if not npy_path.exists() or not filenames_path.exists():
+        raise FileNotFoundError(f"missing ViCLIP-OT embeddings for video_id={video_id!r}")
+
+    vectors = np.load(npy_path)
+    filenames_df = pd.read_csv(filenames_path).sort_values("row_index").reset_index(drop=True)
+
+    if len(filenames_df) != vectors.shape[0]:
+        raise AssertionError(
+            f"video_id={video_id!r}: npy has {vectors.shape[0]} rows but "
+            f"filenames.csv has {len(filenames_df)} rows"
+        )
+
+    return _build_result(video_id, vectors, list(filenames_df["filename"]), timestamp_root)
+
+
+def load_video_clip_vitb32(
+    video_id: str,
+    dataset_root: Path = config.CLIP_VITB32_DIR,
+    timestamp_root: Path = config.TIMESTAMP_ROOT,
+) -> VideoLoadResult:
+    npy_path = dataset_root / f"{video_id}.npy"
+    if not npy_path.exists():
+        raise FileNotFoundError(f"missing CLIP ViT-B/32 embeddings for video_id={video_id!r}")
+
+    vectors = np.load(npy_path).astype("float32")  # source is float16 on disk
+    filenames = [f"{i + 1:03d}.jpg" for i in range(vectors.shape[0])]
+    return _build_result(video_id, vectors, filenames, timestamp_root)

@@ -220,19 +220,27 @@ def frames_for_classes(conn: sqlite3.Connection, class_names: list) -> list:
     ).fetchall()
 
 
-def search_text(conn: sqlite3.Connection, query: str, limit: int = 200) -> list:
+def search_text(conn: sqlite3.Connection, query: str, video_id: str | None = None, limit: int = 200) -> list:
     """FTS5 MATCH against the diacritic-folded shadow column, best (lowest
-    bm25()) first. Caller is expected to have already checked the table isn't
-    empty (this pipeline's text leg is skipped entirely, not queried, while
-    no OCR/caption data exists)."""
+    bm25()) first. Optionally restricted to a single video_id (e.g. the
+    UI's "search in this video only"). Caller is expected to have already
+    checked the table isn't empty (this pipeline's text leg is skipped
+    entirely, not queried, while no OCR/caption data exists)."""
     folded = fold_diacritics(query)
     if len(folded.strip()) < 3:
         return []  # trigram tokenizer needs >= 3 chars to match anything
-    rows = conn.execute(
-        "SELECT global_id, video_id, text, source, bm25(keyframe_text) AS score "
-        "FROM keyframe_text WHERE keyframe_text MATCH ? ORDER BY score LIMIT ?",
-        (f"text_folded:{folded}", limit),
-    ).fetchall()
+    if video_id:
+        rows = conn.execute(
+            "SELECT global_id, video_id, text, source, bm25(keyframe_text) AS score "
+            "FROM keyframe_text WHERE keyframe_text MATCH ? AND video_id = ? ORDER BY score LIMIT ?",
+            (f"text_folded:{folded}", video_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT global_id, video_id, text, source, bm25(keyframe_text) AS score "
+            "FROM keyframe_text WHERE keyframe_text MATCH ? ORDER BY score LIMIT ?",
+            (f"text_folded:{folded}", limit),
+        ).fetchall()
     return rows
 
 

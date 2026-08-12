@@ -28,7 +28,7 @@ def _get_model():
         from transformers import AutoModel
 
         _device = "cuda" if torch.cuda.is_available() else "cpu"
-        _model = AutoModel.from_pretrained(config.MODEL_ID, trust_remote_code=True)
+        _model = AutoModel.from_pretrained(config.VICLIP_MODEL_ID, trust_remote_code=True)
         _model.to(_device)
         _model.eval()
     return _model
