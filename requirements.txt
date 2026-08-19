@@ -22,7 +22,6 @@ tqdm>=4.60
 # transitively but are pinned implicitly by these two.
 multilingual-clip==1.0.10
 
-# old_version/ (the prior standalone CLIP ViT-B/32 pipeline, kept for
-# reference only and not run by anything above) needs its own additional
-# dependencies (openai `clip`, deep-translator, ftfy, regex) -- see git
-# history for the original requirements.txt if it's ever run again.
+# ASR / Caption fuzzy legs (ui/app.py) -- bulk-indexes transcript/caption
+# text into a local Elasticsearch and runs a fuzzy match query against it.
+elasticsearch>=8.0.0

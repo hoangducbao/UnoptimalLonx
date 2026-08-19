@@ -1,100 +1,92 @@
-# OpticaLynx — C1 Baseline
+# Routing101
 
-Minimal end-to-end video moment retrieval baseline (AIC 2026 KIS/VQA path):
-index → text query → ranked keyframe results → Streamlit UI. Full spec at
-[`docs/c1-baseline-spec.md`](docs/c1-baseline-spec.md). Everything is
-embedded/file-based — no server processes.
+Multi-layer text-to-keyframe retrieval over the AIC video corpus (873
+videos / ~177k keyframes): keyframe embeddings, ASR-transcript embeddings,
+and frame-caption embeddings, each searchable standalone or fused with
+Reciprocal Rank Fusion (RRF). One combined Streamlit UI over all three
+layers. Everything is embedded/file-based (FAISS flat indices, on-disk
+caches) except the fuzzy-text legs, which use a local Elasticsearch.
 
 ## Layout
 
 ```
 pipeline/
-  config.py          paths + constants (dataset roots, index paths, backend registry)
-  backends.py         registry wiring each backend's paths to its encode_text/load_video
-  viclip_encoder.py   ViCLIP-OT text tower (query-time text -> 768-d vector)
-  clip_encoder.py      Multilingual-CLIP text tower, paired with CLIP ViT-B/32 image features
-  loader.py           per-video frame embeddings + timestamp join, one loader per backend
-  detections.py       filtered_detections.csv -> class vocabulary + per-frame labels
-  store.py            SQLite metadata (videos, keyframes, classes, frame_classes,
-                       keyframe_text FTS5 w/ trigram + diacritic-folded search) —
-                       shared across backends
-  index_pipeline.py   builds every backend's FAISS indices + the SQLite store
-  fusion.py           Reciprocal Rank Fusion (k=60), per-leg weighted — isolated, swappable
-  retrieve.py          query pipeline: encode -> search (x2) + FTS5 -> fuse -> enrich;
-                       supports restricting every leg to one video
+  config.py          paths + constants shared by routing101.py and the text encoders
+  clip_encoder.py     Multilingual-CLIP text tower, paired with CLIP ViT-B/32 image features
+  viclip_encoder.py   ViCLIP-OT text tower (routing101.py --backend viclip)
+  loader.py           per-video frame embeddings + timestamp join (routing101.py)
 ui/
-  app.py              Streamlit UI: backend selector, results grid, click-to-open popup
-                       (nearby frames + search-within-this-video)
-index/                generated FAISS indices + SQLite DB (git-ignored)
-old_version/          the prior CLIP ViT-B/32-only pipeline — reference only, not run
+  app.py              combined Streamlit UI — all three layers below, one process
+index/                generated FAISS indices (git-ignored), reused across app runs
+routing101.py          CLI: single-embedding-space text -> frame search (see its docstring)
+routing101.ipynb        annotated walkthrough: keyframe embeddings (SigLIP2 / CLIP ViT-B/32 / RRF)
+routing101_asr.ipynb     annotated walkthrough: ASR-segment search + RRF, mapped to keyframes
+routing101_caption.ipynb annotated walkthrough: frame-caption search + RRF, mapped to keyframes
 ```
 
-## Backends
+## Layers
 
-Two selectable embedding spaces, both indexed over the exact same 873
-videos / 177,321 keyframes (verified row-for-row aligned), sharing one
-SQLite store and `global_id` scheme — only the FAISS vector files and text
-encoder differ per backend (`pipeline/backends.py`):
+| Layer | Legs kept | Text encoder(s) |
+|---|---|---|
+| Keyframe | SigLIP2, CLIP ViT-B/32, RRF | SigLIP2 text tower, Multilingual-CLIP |
+| ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | SigLIP2 text tower |
+| Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | SigLIP2 text tower |
 
-| Backend | Dim | Frame source | Text encoder |
-|---|---|---|---|
-| `clip_vitb32` (**default**) | 512 | `AICData/clip-features-32/*.npy` | Multilingual-CLIP |
-| `viclip` | 768 | `AICDataExtracted/embeddings/*_viclip768.npy` | ViCLIP-OT (`minhnguyent546/ViCLIP-OT`) |
+The SigLIP2 and Multilingual-CLIP text towers are loaded once per process
+(`st.cache_resource`, keyed process-wide) and shared across all three
+layers — `ui/app.py` is meant to run as a single `streamlit run` process;
+running the old per-layer apps as separate processes each duplicated the
+~4GB of model weights and was the direct cause of paging-file exhaustion.
 
-`clip_vitb32` is the default: measured directly on this dataset, it
-discriminates true matches from background noise far more sharply than
-`viclip` across the whole corpus (top-1 similarity z-score ≈5.5 vs ≈2.3 for
-the same English query, ≈5.4 vs ≈3.5 in Vietnamese), despite `viclip`
-producing larger raw similarity numbers. Both stay selectable in the UI
-sidebar for comparison.
+CLIP ViT-B/32 is Keyframe-only by current scope — the ASR/Caption layers
+dropped their CLIP legs (SigLIP2 + fuzzy + RRF only).
 
 ## Data
 
-- `AICDataExtracted/embeddings/{video_id}_viclip768.npy` + `_filenames.csv` —
-  ViCLIP-OT frame embeddings (768-d)
+- `AICDataExtracted/siglib_embed/*.npy` — SigLIP2 frame embeddings (768-d)
 - `AICData/clip-features-32/{video_id}.npy` — CLIP ViT-B/32 frame embeddings
   (512-d, float16 on disk)
-- `AICDataExtracted/filtered_detections.csv` — object detections (shared
-  across backends; class labels are re-embedded per backend's text tower)
-- `AICData/map-keyframes/{video_id}.csv` — reused for per-frame timestamps
-  (row-aligned 1:1 with both embedding sources)
-- `AICData/keyframes/{video_id}/{filename}` — reused, best-effort, for
-  UI thumbnails
-- OCR / captions / ASR: not available yet — the corresponding leg (FTS5
-  text search) degrades gracefully when empty.
-
-## Query pipeline
-
-Text query → encode with the selected backend's text tower → (1) search
-that backend's frame FAISS index, (2) search its object-class FAISS index
-and map matches back to frames via the shared `frame_classes` table, (3)
-search OCR/caption FTS5 (skipped while empty) → fuse the up-to-three ranked
-lists with weighted RRF (`pipeline/fusion.py`) → enrich with
-video/timestamp/thumbnail info. Every leg optionally restricts to a single
-video (`retrieve.search(..., video_id=...)`), used by the UI's
-"search in this video only".
-
-Fusion weights (`config.DEFAULT_LEG_WEIGHTS`, tunable live in the UI
-sidebar): the object-class leg is weighted down from 1.0 by default since
-its cosine similarities are compressed for compound queries (e.g.
-"Motorcycle" 0.63 vs "Candle" 0.61 — barely separated), so a wide top-N
-match pool pulls in weakly-related frames if left unweighted.
+- `AICDataExtracted/asr_embed/*_asr_siglip768.npy` + `_frames.csv` —
+  SigLIP2 embeddings of ASR segments, one row per (segment × keyframe)
+- `AICDataExtracted/transcripts/*.csv` — raw ASR transcript segments, bulk
+  -indexed into Elasticsearch for the fuzzy leg
+- `AICDataExtracted/siglip_caption/*_caption_siglip768.npy` + `_frames.csv`
+  — SigLIP2 embeddings of frame captions (one row per keyframe)
+- `AICDataExtracted/captioning/*_captions.csv` — raw frame captions, bulk
+  -indexed into Elasticsearch for the fuzzy leg
+- `AICData/map-keyframes/{video_id}.csv` — per-frame timestamps, used to
+  resolve the ASR fuzzy leg's segment hits to a keyframe number
+- `AICData/keyframes/{video_id}/{n:03d}.jpg` — thumbnails
 
 ## UI
 
-`streamlit run ui/app.py` — text query, results grid with per-signal
-badges (`frame`/`class`/`text`) showing what contributed to each result's
-rank. Click **Open ▸** on any result to open a popup with the surrounding
-frames from that video and a "search in this video only" box, which itself
-returns results you can click through the same way.
-
-## Usage
-
 ```
-python pipeline/index_pipeline.py                 # full rebuild, both backends, all videos
-python pipeline/index_pipeline.py --limit 5        # quick dev subset
-python pipeline/index_pipeline.py --backends viclip  # rebuild just one backend
-python pipeline/store.py --stats
-python pipeline/retrieve.py "một người đàn ông đang lái xe máy" --backend clip_vitb32
 streamlit run ui/app.py
 ```
+
+Segmented control picks the layer (Keyframe / ASR / Caption); each layer
+has one checkbox per leg + RRF. Hover a result to see a 4x zoom preview.
+Click **Show more** on any result to open a popup with the ±7 neighboring
+frames (by frame number) from the same video.
+
+The fuzzy legs bulk-index their source CSVs into Elasticsearch on first
+use per process (cached, idempotent `_id` per doc) — no separate indexing
+step needed. Requires a local ES reachable at `http://localhost:9200`:
+
+```
+docker run -d --name es -p 9200:9200 -e "discovery.type=single-node" \
+    -e "xpack.security.enabled=false" docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+```
+
+If ES isn't reachable, the fuzzy leg degrades to an empty result (with an
+on-page warning) rather than breaking the other legs.
+
+## CLI
+
+```
+python routing101.py "a man riding a motorbike" --backend siglip2 --k 100
+python routing101.py --eval queries.csv --backend clip_vitb32
+```
+
+See `routing101.py`'s module docstring for the three selectable backends
+(`siglip2`, `clip_vitb32`, `viclip`) and their on-disk index caching.
