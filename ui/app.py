@@ -11,20 +11,28 @@ app loads each text tower exactly once (st.cache_resource is keyed per
 Python process, shared across all three modes below) and only ever runs
 as a single process.
 
-Three modes, picked with the segmented control:
+Five signals, picked with the segmented control (icon-only):
   Keyframe  SigLIP2 + CLIP ViT-B/32 (Multilingual-CLIP text tower) frame
             embeddings + RRF of the two.
   ASR       SigLIP2-ASR-segment embeddings + Elasticsearch fuzzy search
             over the transcript text + RRF of the two.
   Caption   SigLIP2-caption embeddings + Elasticsearch fuzzy search over
             frame captions + RRF of the two.
+  OCR       Elasticsearch fuzzy search over per-frame OCR text only --
+            no embedding leg, no RRF (single leg by design).
+  Summary   SigLIP2-summary embeddings + Elasticsearch fuzzy search over
+            each video's one-paragraph summary + RRF of the two. Video-
+            level, not frame-level: one result per video (thumbnail is
+            that video's frame 1), and "group by" groups by collection
+            (lot) instead of by video, since every result is already a
+            distinct video.
 
 Every leg, from any mode, is normalized to the same result shape before
 rendering -- {video_id, n, rank, score_label, score_val, text} where `n`
 is always the 1-indexed keyframe number on disk (map-keyframes.n) -- so
-one render_grid() and one "show more" neighbor popup serve all three
-modes. The CLIP ViT-B/32 leg is Keyframe-only (dropped from ASR/Caption
-per the current scope -- SigLIP2 + fuzzy + RRF only there).
+one render_grid() and one "show more" neighbor popup serve all five
+modes. The CLIP ViT-B/32 leg is Keyframe-only (dropped from the other
+embedding legs per the current scope -- SigLIP2 + fuzzy + RRF only there).
 """
 
 import re
@@ -37,7 +45,7 @@ import pandas as pd
 import streamlit as st
 import torch
 
-st.set_page_config(page_title="Routing101 — retrieval preview", layout="wide")
+st.set_page_config(page_title="Routing101 by MiLF", layout="wide")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PIPELINE_DIR = REPO_ROOT / "pipeline"
@@ -66,22 +74,34 @@ TRANSCRIPTS_DIR = Path("D:/University/Summ26/AICDataExtracted/transcripts")
 CAPTIONING_DIR = Path("D:/University/Summ26/AICDataExtracted/captioning")
 SIGLIP_CAPTION_DIR = Path("D:/University/Summ26/AICDataExtracted/siglip_caption")
 
+OCR_DIR = Path("D:/University/Summ26/AICDataExtracted/ocr")
+
+SUMMARY_DIR = Path("D:/University/Summ26/AICDataExtracted/summaries")
+SUMMARY_EMBED_DIR = Path("D:/University/Summ26/AICDataExtracted/summary_embed")
+SUMMARY_EMBED_DIR.mkdir(parents=True, exist_ok=True)
+
 MAP_KEYFRAMES_DIR = Path("D:/University/Summ26/AICData/map-keyframes")
 THUMBNAIL_ROOT = Path("D:/University/Summ26/AICData/keyframes")
 
 INDEX_DIR = REPO_ROOT / "index"
 ASR_INDEX_DIR = INDEX_DIR / "routing101_asr"
 CAPTION_INDEX_DIR = INDEX_DIR / "routing101_caption"
+SUMMARY_INDEX_DIR = INDEX_DIR / "routing101_summary"
 ASR_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 CAPTION_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+SUMMARY_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 SIGLIP_ASR_FAISS = ASR_INDEX_DIR / "siglip_asr_flat_ip.index"
 SIGLIP_ASR_META = ASR_INDEX_DIR / "meta_siglip_asr.csv"
 SIGLIP_CAPTION_FAISS = CAPTION_INDEX_DIR / "siglip_caption_flat_ip.index"
 SIGLIP_CAPTION_META = CAPTION_INDEX_DIR / "meta_siglip_caption.csv"
+SIGLIP_SUMMARY_FAISS = SUMMARY_INDEX_DIR / "siglip_summary_flat_ip.index"
+SIGLIP_SUMMARY_META = SUMMARY_INDEX_DIR / "meta_siglip_summary.csv"
 
 ES_HOST = "http://localhost:9200"
 ES_INDEX_ASR = "asr_segments"
 ES_INDEX_CAPTION = "caption_frames"
+ES_INDEX_OCR = "ocr_frames"
+ES_INDEX_SUMMARY = "summary_videos"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -122,6 +142,11 @@ def parse_lot_range(text: str):
 def video_lot_num(video_id: str):
     m = re.match(r"^L(\d+)", str(video_id).upper())
     return int(m.group(1)) if m else None
+
+
+def video_lot_str(video_id: str) -> str:
+    lot = video_lot_num(video_id)
+    return f"L{lot}" if lot is not None else str(video_id)
 
 
 def apply_filters(df: pd.DataFrame, video_filter: str, lot_range) -> pd.DataFrame:
@@ -539,6 +564,292 @@ def attach_keyframe_caption(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Mode 4 — OCR: Elasticsearch fuzzy over per-frame OCR text only. Single
+# leg by design (no embedding leg, no RRF) -- each video's CSV has one row
+# per detected text box, grouped into one blob per frame before indexing.
+# ---------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner="Indexing OCR text into Elasticsearch…")
+def ensure_ocr_fuzzy_index():
+    from elasticsearch import helpers
+
+    es = get_es_client()
+    if not es.indices.exists(index=ES_INDEX_OCR):
+        es.indices.create(index=ES_INDEX_OCR, mappings={"properties": {
+            "video_id": {"type": "keyword"},
+            "frame_id": {"type": "integer"},
+            "text": {"type": "text"},
+        }})
+
+    def _docs():
+        for csv_path in sorted(OCR_DIR.glob("*.csv")):
+            if csv_path.name.startswith("run_manifest"):
+                continue  # per-run metadata sidecar, not a per-video OCR dump
+            video_id = csv_path.stem
+            df = pd.read_csv(csv_path)
+            if df.empty:
+                continue
+            grouped = df.groupby("frame_id")["text"].apply(
+                lambda s: " ".join(str(t) for t in s if pd.notna(t))
+            )
+            for frame_id, text in grouped.items():
+                if not text.strip():
+                    continue
+                yield {
+                    "_index": ES_INDEX_OCR,
+                    "_id": f"{video_id}_{int(frame_id)}",
+                    "_source": {"video_id": video_id, "frame_id": int(frame_id), "text": text},
+                }
+
+    helpers.bulk(es, _docs(), stats_only=True, raise_on_error=False)
+    return True
+
+
+def search_ocr_fuzzy(query: str, k: int = FETCH_K) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "text"])
+    try:
+        ensure_ocr_fuzzy_index()
+        es = get_es_client()
+        resp = es.search(index=ES_INDEX_OCR, size=k, query={
+            "match": {"text": {"query": query, "fuzziness": "AUTO"}}
+        })
+    except Exception as e:
+        st.warning(f"[OCR fuzzy] Elasticsearch not reachable at {ES_HOST} ({e}) — showing no results.")
+        return empty
+
+    rows = []
+    for rank, hit in enumerate(resp["hits"]["hits"], start=1):
+        src = hit["_source"]
+        rows.append({"rank": rank, "score": float(hit["_score"]), "video_id": src["video_id"],
+                      "frame_id": src["frame_id"], "text": src["text"]})
+    return pd.DataFrame(rows)
+
+
+def attach_keyframe_ocr(df: pd.DataFrame) -> pd.DataFrame:
+    """OCR is frame-level: frame_id == map-keyframes.n directly, no lookup needed."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    out["n"] = out["frame_id"].astype(int)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Mode 5 — Summary: SigLIP2-summary embeddings + Elasticsearch fuzzy, RRF.
+# Video-level, not frame-level: one row per video (its whole summary), so
+# RRF keys on video_id alone, and the displayed thumbnail is always that
+# video's frame 1 (no per-summary frame to point at).
+# ---------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner="Embedding video summaries…")
+def ensure_summary_embeddings():
+    """One-time SigLIP2 text-tower embed of every summaries/*.txt, saved to
+    SUMMARY_EMBED_DIR so later runs don't re-embed (resumable: skips any
+    video that already has a .npy on disk)."""
+    for txt_path in sorted(SUMMARY_DIR.glob("*.txt")):
+        video_id = txt_path.stem
+        out_path = SUMMARY_EMBED_DIR / f"{video_id}_summary_siglip768.npy"
+        if out_path.exists():
+            continue
+        text = txt_path.read_text(encoding="utf-8").strip()
+        if not text:
+            continue
+        vec = encode_text_siglip2([text])
+        np.save(out_path, vec.astype("float32"))
+    return True
+
+
+@st.cache_resource(show_spinner="Building SigLIP2-summary FAISS index…")
+def build_siglip_summary_index():
+    ensure_summary_embeddings()
+    if not (SIGLIP_SUMMARY_FAISS.exists() and SIGLIP_SUMMARY_META.exists()):
+        npy_paths = sorted(SUMMARY_EMBED_DIR.glob("*_summary_siglip768.npy"))
+        index = faiss.IndexFlatIP(768)
+        rows = []
+        gid = 0
+        for npy_path in npy_paths:
+            video_id = video_id_from_filename(str(npy_path), ("_summary_siglip768",))
+            txt_path = SUMMARY_DIR / f"{video_id}.txt"
+            if not txt_path.exists():
+                continue
+            vec = l2_normalize(np.load(npy_path))
+            index.add(vec)
+            rows.append((gid, video_id, txt_path.read_text(encoding="utf-8").strip()))
+            gid += 1
+        faiss.write_index(index, str(SIGLIP_SUMMARY_FAISS))
+        pd.DataFrame(rows, columns=["global_id", "video_id", "text"]).to_csv(SIGLIP_SUMMARY_META, index=False)
+
+    return faiss.read_index(str(SIGLIP_SUMMARY_FAISS)), pd.read_csv(SIGLIP_SUMMARY_META)
+
+
+def search_siglip_summary(query: str, k: int = FETCH_K) -> pd.DataFrame:
+    index, meta = build_siglip_summary_index()
+    qvec = l2_normalize(encode_text_siglip2([query]))
+    n = min(k, index.ntotal)
+    scores, ids = index.search(qvec, n)
+    rows = []
+    for rank, (gid, score) in enumerate(zip(ids[0], scores[0]), start=1):
+        if gid == -1:
+            continue
+        row = meta.iloc[int(gid)]
+        rows.append({"rank": rank, "score": float(score), "video_id": row["video_id"], "text": row["text"]})
+    return pd.DataFrame(rows)
+
+
+@st.cache_resource(show_spinner="Indexing summaries into Elasticsearch…")
+def ensure_summary_fuzzy_index():
+    from elasticsearch import helpers
+
+    es = get_es_client()
+    if not es.indices.exists(index=ES_INDEX_SUMMARY):
+        es.indices.create(index=ES_INDEX_SUMMARY, mappings={"properties": {
+            "video_id": {"type": "keyword"},
+            "text": {"type": "text"},
+        }})
+
+    def _docs():
+        for txt_path in sorted(SUMMARY_DIR.glob("*.txt")):
+            video_id = txt_path.stem
+            text = txt_path.read_text(encoding="utf-8").strip()
+            if not text:
+                continue
+            yield {"_index": ES_INDEX_SUMMARY, "_id": video_id, "_source": {"video_id": video_id, "text": text}}
+
+    helpers.bulk(es, _docs(), stats_only=True, raise_on_error=False)
+    return True
+
+
+def search_summary_fuzzy(query: str, k: int = FETCH_K) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=["rank", "score", "video_id", "text"])
+    try:
+        ensure_summary_fuzzy_index()
+        es = get_es_client()
+        resp = es.search(index=ES_INDEX_SUMMARY, size=k, query={
+            "match": {"text": {"query": query, "fuzziness": "AUTO"}}
+        })
+    except Exception as e:
+        st.warning(f"[Summary fuzzy] Elasticsearch not reachable at {ES_HOST} ({e}) — showing other legs only.")
+        return empty
+
+    rows = []
+    for rank, hit in enumerate(resp["hits"]["hits"], start=1):
+        src = hit["_source"]
+        rows.append({"rank": rank, "score": float(hit["_score"]), "video_id": src["video_id"], "text": src["text"]})
+    return pd.DataFrame(rows)
+
+
+def rrf_fuse_summary(named_dfs: dict, k: int = RRF_K, top_n: int = DISPLAY_N) -> pd.DataFrame:
+    scores, extra = {}, {}
+    for df in named_dfs.values():
+        if df is None or df.empty:
+            continue
+        for _, row in df.iterrows():
+            key = row["video_id"]
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + row["rank"])
+            extra.setdefault(key, {"text": row.get("text")})
+    rows = [{"video_id": vid, "rrf_score": s, **extra[vid]} for vid, s in scores.items()]
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out = out.sort_values("rrf_score", ascending=False).reset_index(drop=True)
+    out["rank"] = np.arange(1, len(out) + 1)
+    return out.head(top_n)
+
+
+def attach_keyframe_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Video-level: always point at frame 1 as the representative thumbnail."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    out["n"] = 1
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Mode 6 — Mixed: a user-weighted RRF across Keyframe/ASR/Caption/OCR (not
+# Summary -- video-level, kept out of this signal). For each signal, only
+# its *checked* legs (chosen in the "Change weights" popup)
+# contribute -- 2 checked legs are fused with that signal's own existing
+# rrf_fuse_* first (so Mixed reuses the exact same per-signal RRF already
+# used standalone), 1 checked leg is used at its own raw rank, 0 checked
+# legs (or a 0 weight) drop the signal entirely. The resulting per-signal
+# rank lists are then combined with a weighted RRF, keyed on (video_id, n)
+# since every signal is normalized to that shape already.
+# ---------------------------------------------------------------------------
+
+def _mixed_keyframe_df(query, fetch_k, video_filter, lot_filter, legs) -> pd.DataFrame:
+    named = {}
+    if legs.get("kf_siglip2"):
+        named["siglip2"] = apply_filters(search_siglip2_frame(query, k=fetch_k), video_filter, lot_filter)
+    if legs.get("kf_clip"):
+        named["clip"] = apply_filters(search_clip_frame(query, k=fetch_k), video_filter, lot_filter)
+    if not named:
+        return None
+    if len(named) == 1:
+        df = next(iter(named.values())).copy()
+        df["n"] = df["frame_id"] + 1
+    else:
+        df = rrf_fuse_frame(list(named.values()), top_n=fetch_k)
+    return df[["video_id", "n", "rank"]] if df is not None and not df.empty else None
+
+
+def _mixed_asr_df(query, fetch_k, video_filter, lot_filter, legs) -> pd.DataFrame:
+    named = {}
+    if legs.get("asr_siglip"):
+        named["siglip_asr"] = apply_filters(search_siglip_asr(query, k=fetch_k), video_filter, lot_filter)
+    if legs.get("asr_fuzzy"):
+        named["fuzzy"] = apply_filters(search_asr_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+    if not named:
+        return None
+    if len(named) == 1:
+        df = attach_keyframe_asr(next(iter(named.values())))
+    else:
+        df = attach_keyframe_asr(rrf_fuse_asr(named, top_n=fetch_k))
+    return df[["video_id", "n", "rank"]] if df is not None and not df.empty else None
+
+
+def _mixed_caption_df(query, fetch_k, video_filter, lot_filter, legs) -> pd.DataFrame:
+    named = {}
+    if legs.get("cap_siglip"):
+        named["siglip_caption"] = apply_filters(search_siglip_caption(query, k=fetch_k), video_filter, lot_filter)
+    if legs.get("cap_fuzzy"):
+        named["fuzzy"] = apply_filters(search_caption_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+    if not named:
+        return None
+    if len(named) == 1:
+        df = attach_keyframe_caption(next(iter(named.values())))
+    else:
+        df = attach_keyframe_caption(rrf_fuse_caption(named, top_n=fetch_k))
+    return df[["video_id", "n", "rank"]] if df is not None and not df.empty else None
+
+
+def _mixed_ocr_df(query, fetch_k, video_filter, lot_filter) -> pd.DataFrame:
+    """OCR has no leg choice -- its single Fuzzy OCR leg is used whenever
+    its weight is > 0."""
+    df = attach_keyframe_ocr(apply_filters(search_ocr_fuzzy(query, k=fetch_k), video_filter, lot_filter))
+    return df[["video_id", "n", "rank"]] if df is not None and not df.empty else None
+
+
+def rrf_fuse_weighted(signal_dfs: dict, weights: dict, k: int = RRF_K, top_n: int = DISPLAY_N) -> pd.DataFrame:
+    """Weighted RRF across already-per-signal-ranked dfs, keyed on (video_id, n)."""
+    scores: dict = {}
+    for name, df in signal_dfs.items():
+        w = weights.get(name, 0)
+        if not w or df is None or df.empty:
+            continue
+        for _, row in df.iterrows():
+            key = (row["video_id"], int(row["n"]))
+            scores[key] = scores.get(key, 0.0) + w * (1.0 / (k + row["rank"]))
+    rows = [{"video_id": vid, "n": n, "rrf_score": s} for (vid, n), s in scores.items()]
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out = out.sort_values("rrf_score", ascending=False).reset_index(drop=True)
+    out["rank"] = np.arange(1, len(out) + 1)
+    return out.head(top_n)
+
+
+# ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
@@ -552,7 +863,7 @@ st.markdown("""
 }
 .thumb-wrap:hover { z-index: 100; }
 .thumb-wrap:hover img {
-    transform: scale(2);
+    transform: scale(2.5);
     box-shadow: 0 12px 32px rgba(0,0,0,0.45);
     position: relative;
 }
@@ -573,8 +884,84 @@ def round_top_k(k) -> int:
 def copy_to_scope(video_id: str):
     """Copy button callback: fills both scope boxes from one frame's video_id."""
     st.session_state.video_filter_text = video_id
-    lot = video_lot_num(video_id)
-    st.session_state.lot_filter_text = f"L{lot}" if lot is not None else ""
+    st.session_state.lot_filter_text = video_lot_str(video_id)
+
+
+def copy_collection_only(video_id: str):
+    """Copy button callback for a collection-grouped result: the group spans
+    many videos, so only the collection box is meaningful to fill."""
+    st.session_state.lot_filter_text = video_lot_str(video_id)
+
+
+# ---------------------------------------------------------------------------
+# Mixed signal: "Change weights" popup -- 4 sliders (0-3) for Keyframe/ASR/
+# Caption/OCR, plus per-signal leg checkboxes (OCR has none -- single leg).
+# Edits are staged in mw_* widget keys and only committed to the applied
+# mixed_weights/mixed_legs dicts on Save; Cancel discards them.
+# ---------------------------------------------------------------------------
+
+MIXED_SIGNAL_NAMES = ["Keyframe", "ASR", "Caption", "OCR"]
+MIXED_LEG_DEFS = {
+    "Keyframe": [("kf_siglip2", "SigLIP2"), ("kf_clip", "CLIP")],
+    "ASR": [("asr_siglip", "SigLIP2 ASR"), ("asr_fuzzy", "Fuzzy ASR")],
+    "Caption": [("cap_siglip", "SigLIP2 Caption"), ("cap_fuzzy", "Fuzzy Caption")],
+}  # OCR intentionally omitted -- single fuzzy-only leg, nothing to choose
+
+MIXED_DEFAULT_WEIGHTS = {name: 1 for name in MIXED_SIGNAL_NAMES}
+MIXED_DEFAULT_LEGS = {
+    "kf_siglip2": True, "kf_clip": True,
+    "asr_siglip": False, "asr_fuzzy": True,
+    "cap_siglip": False, "cap_fuzzy": True,
+}
+
+st.session_state.setdefault("mixed_weights", dict(MIXED_DEFAULT_WEIGHTS))
+st.session_state.setdefault("mixed_legs", dict(MIXED_DEFAULT_LEGS))
+
+
+def _stage_weights_dialog():
+    if not st.session_state.get("_mw_staged", False):
+        for name in MIXED_SIGNAL_NAMES:
+            st.session_state[f"mw_weight_{name}"] = st.session_state.mixed_weights[name]
+        for leg_key, val in st.session_state.mixed_legs.items():
+            st.session_state[f"mw_leg_{leg_key}"] = val
+        st.session_state._mw_staged = True
+
+
+def _apply_default_weights():
+    for name in MIXED_SIGNAL_NAMES:
+        st.session_state[f"mw_weight_{name}"] = 1
+    for leg_key, default_val in MIXED_DEFAULT_LEGS.items():
+        st.session_state[f"mw_leg_{leg_key}"] = default_val
+
+
+@st.dialog("Change weights")
+def change_weights_dialog():
+    _stage_weights_dialog()
+
+    st.caption("Weight per signal (0 = off)")
+    for name in MIXED_SIGNAL_NAMES:
+        st.slider(name, min_value=0, max_value=3, key=f"mw_weight_{name}")
+
+    st.divider()
+    st.caption("Legs")
+    cols = st.columns(3)
+    for col, signal_name in zip(cols, ["Keyframe", "ASR", "Caption"]):
+        with col:
+            st.caption(f"**{signal_name}**")
+            for leg_key, leg_label in MIXED_LEG_DEFS[signal_name]:
+                st.checkbox(leg_label, key=f"mw_leg_{leg_key}")
+
+    st.divider()
+    with st.container(horizontal=True):
+        st.button("Default", on_click=_apply_default_weights)
+        if st.button("Cancel"):
+            st.session_state._mw_staged = False
+            st.rerun()
+        if st.button("Save", type="primary"):
+            st.session_state.mixed_weights = {name: st.session_state[f"mw_weight_{name}"] for name in MIXED_SIGNAL_NAMES}
+            st.session_state.mixed_legs = {leg_key: st.session_state[f"mw_leg_{leg_key}"] for leg_key in st.session_state.mixed_legs}
+            st.session_state._mw_staged = False
+            st.rerun()
 
 
 def df_to_results(df: pd.DataFrame, score_col: str, text_col: str = None) -> list:
@@ -638,24 +1025,34 @@ def render_thumb(col, r: dict):
         st.caption(f"**{r['video_id']}** · frame {r['n']}")
         st.caption(f"rank {r['rank']} · {r['score_label']}={r['score_val']:.4f}")
         if r["text"]:
-            st.caption(r["text"][:140] + ("…" if len(r["text"]) > 140 else ""))
+            if st.session_state.get("show_full_text", False):
+                st.caption(r["text"])
+            else:
+                st.caption(r["text"][:140] + ("…" if len(r["text"]) > 140 else ""))
 
 
-def render_actions(video_id: str, center_n: int, key_prefix: str, key_suffix: str):
+def render_actions(video_id: str, center_n: int, key_prefix: str, key_suffix: str, collection_only: bool = False):
     with st.container(horizontal=True):
         if st.button(":material/more_horiz:", key=f"{key_prefix}_more_{key_suffix}", help="Show more"):
             show_neighbors(video_id, center_n)
-        st.button(":material/content_copy:", key=f"{key_prefix}_copy_{key_suffix}", help="Copy video id",
-                  on_click=copy_to_scope, args=(video_id,))
+        if collection_only:
+            st.button(":material/content_copy:", key=f"{key_prefix}_copy_{key_suffix}", help="Copy collection id",
+                      on_click=copy_collection_only, args=(video_id,))
+        else:
+            st.button(":material/content_copy:", key=f"{key_prefix}_copy_{key_suffix}", help="Copy video id",
+                      on_click=copy_to_scope, args=(video_id,))
 
 
-def render_grid(results: list, key_prefix: str, group_by_video: bool = False):
+def render_grid(results: list, key_prefix: str, group_mode: str = None):
+    """group_mode: None (ungrouped), "video" (group frames by video_id), or
+    "collection" (group by lot -- Summary mode, where every result is
+    already a distinct video so grouping by video would be a no-op)."""
     if not results:
         st.info("No results.")
         return
     cols_per_row = 5
 
-    if not group_by_video:
+    if not group_mode:
         for start in range(0, len(results), cols_per_row):
             chunk = results[start : start + cols_per_row]
             cols = st.columns(cols_per_row)
@@ -665,39 +1062,108 @@ def render_grid(results: list, key_prefix: str, group_by_video: bool = False):
                     render_actions(r["video_id"], r["n"], key_prefix, f"{r['video_id']}_{r['n']}_{r['rank']}")
         return
 
-    # Grouped by video: results already arrive rank-sorted, so a video's
-    # first occurrence is its best (lowest-rank) frame -- that also
-    # decides the group's own display order.
+    # Grouped: results already arrive rank-sorted, so a group's first
+    # occurrence is its best (lowest-rank) member -- that also decides the
+    # group's own display order.
+    group_key_fn = video_lot_str if group_mode == "collection" else (lambda vid: vid)
+    unit = "video(s)" if group_mode == "collection" else "frame(s)"
     groups: dict = {}
     for r in results:
-        groups.setdefault(r["video_id"], []).append(r)
+        groups.setdefault(group_key_fn(r["video_id"]), []).append(r)
     ordered_groups = sorted(groups.items(), key=lambda kv: kv[1][0]["rank"])
 
-    for video_id, frames in ordered_groups:
+    for group_key, frames in ordered_groups:
         best = frames[0]
-        st.markdown(f"**{video_id}** · best rank {best['rank']} · {best['score_label']}={best['score_val']:.4f} · {len(frames)} frame(s)")
+        st.markdown(f"**{group_key}** · best rank {best['rank']} · {best['score_label']}={best['score_val']:.4f} · {len(frames)} {unit}")
         for start in range(0, len(frames), cols_per_row):
             chunk = frames[start : start + cols_per_row]
             cols = st.columns(cols_per_row)
             for col, r in zip(cols, chunk):
                 render_thumb(col, r)
-        render_actions(video_id, best["n"], key_prefix, f"grp_{video_id}")
+        render_actions(best["video_id"], best["n"], key_prefix, f"grp_{group_key}",
+                       collection_only=(group_mode == "collection"))
         st.divider()
 
 
-st.title("Routing101 — retrieval preview")
+# ---------------------------------------------------------------------------
+# Startup: eagerly build every FAISS index and Elasticsearch index once, up
+# front -- st.cache_resource is shared process-wide, so whichever session
+# hits this first pays the cost here, and every later session (and every
+# later query, on any signal) is served straight from cache instead of
+# triggering a build mid-search. Shown as a status bar at the very top of
+# the page, above the title, while it runs.
+# ---------------------------------------------------------------------------
+
+with st.status("Loading signals…", expanded=False) as _startup_status:
+    st.write("Keyframe — SigLIP2 frame index")
+    build_frame_index(FRAME_SIGLIP2_GLOB)
+    st.write("Keyframe — CLIP frame index")
+    build_frame_index(FRAME_CLIP_GLOB)
+    st.write("ASR — SigLIP2 index + Elasticsearch")
+    build_siglip_asr_index()
+    ensure_asr_fuzzy_index()
+    st.write("Caption — SigLIP2 index + Elasticsearch")
+    build_siglip_caption_index()
+    ensure_caption_fuzzy_index()
+    st.write("OCR — Elasticsearch")
+    ensure_ocr_fuzzy_index()
+    st.write("Summary — embeddings + SigLIP2 index + Elasticsearch")
+    build_siglip_summary_index()
+    ensure_summary_fuzzy_index()
+    _startup_status.update(label="All signals ready", state="complete")
+
+st.title("Routing101 by MiLF")
+
+SIGNAL_ICONS = {
+    "Keyframe": ":material/image:",
+    "ASR": ":material/mic:",
+    "Caption": ":material/closed_caption:",
+    "OCR": ":material/photo_camera:",
+    "Summary": ":material/edit:",
+    "Mixed": ":material/call_merge:",
+}
 
 with st.sidebar:
     st.header("Search")
 
-    mode = st.segmented_control("Signal", options=["Keyframe", "ASR", "Caption"], default="Keyframe", key="mode")
+    mode = st.segmented_control("Signal", options=list(SIGNAL_ICONS.keys()),
+                                 format_func=lambda m: SIGNAL_ICONS[m],
+                                 default="Keyframe", key="mode", help=", ".join(SIGNAL_ICONS.keys()))
 
-    submitted_query = st.chat_input("e.g. một người đàn ông đang lái xe máy", key="query_input")
-    if submitted_query:
-        st.session_state.query_text = submitted_query
-    query = st.session_state.get("query_text", "")
-    if query:
-        st.caption(f"Query: {query}")
+    # A plain keyed text_area (not st.chat_input) so the query stays visible
+    # in the box after searching -- st.chat_input always clears on submit
+    # and has no way to pre-fill a value. To still get Enter-submits-no-
+    # manual-newline (text_area's native Enter always inserts a newline),
+    # a small JS snippet intercepts Enter on the underlying <textarea> and
+    # blurs it instead, which is what actually commits a text_area's value
+    # and triggers the rerun -- the box still soft-wraps long text on its
+    # own, it just never accepts an explicit newline from the user.
+    query = st.text_area("Query", placeholder="e.g. một người đàn ông đang lái xe máy",
+                          key="query_text", label_visibility="collapsed")
+    st.html("""
+    <script>
+    (function() {
+        function bind() {
+            const ta = document.querySelector('.st-key-query_text textarea');
+            if (!ta || ta.dataset.enterSubmitBound) return;
+            ta.dataset.enterSubmitBound = "1";
+            ta.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.isComposing) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    ta.blur();
+                }
+            });
+        }
+        bind();
+        new MutationObserver(bind).observe(document.body, {childList: true, subtree: true});
+    })();
+    </script>
+    """, unsafe_allow_javascript=True)
+
+    if mode == "Mixed":
+        if st.button("Change weights", icon=":material/tune:"):
+            change_weights_dialog()
 
     st.session_state.setdefault("use_video_scope", False)
     st.session_state.setdefault("use_collection_scope", False)
@@ -710,9 +1176,9 @@ with st.sidebar:
     col_v, col_c = st.columns(2)
     video_filter_text = col_v.text_input("Search in video", placeholder="e.g. L21_V001", key="video_filter_text")
     lot_filter_text = col_c.text_input("Search in collection", placeholder="e.g. L21-L30", key="lot_filter_text")
-    use_video_scope = col_v.checkbox("Use video filter", key="use_video_scope",
+    use_video_scope = col_v.checkbox("Use video", key="use_video_scope",
                                       on_change=_exclusive_scope, args=("use_video_scope",))
-    use_collection_scope = col_c.checkbox("Use collection filter", key="use_collection_scope",
+    use_collection_scope = col_c.checkbox("Use collection", key="use_collection_scope",
                                            on_change=_exclusive_scope, args=("use_collection_scope",))
 
     video_filter = video_filter_text if use_video_scope else ""
@@ -721,13 +1187,20 @@ with st.sidebar:
     def _snap_top_k():
         st.session_state.top_k = round_top_k(st.session_state.top_k)
 
-    col_k, col_g = st.columns(2)
-    col_k.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
-                        key="top_k", on_change=_snap_top_k)
+    st.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
+                     key="top_k", on_change=_snap_top_k)
     top_k = round_top_k(st.session_state.top_k)
     fetch_k = max(FETCH_K, top_k)
 
-    group_by_video = col_g.toggle("Group by video", key="group_by_video")
+    # Summary results are already one-per-video, so "group by video" would
+    # be a no-op there -- group by collection (lot) instead.
+    group_toggle_label = "Group by collection" if mode == "Summary" else "Group by video"
+    group_toggled = st.toggle(group_toggle_label, key="group_by_video")
+    group_mode = None
+    if group_toggled:
+        group_mode = "collection" if mode == "Summary" else "video"
+
+    st.toggle("Show full text", key="show_full_text")
 
     st.divider()
 
@@ -743,6 +1216,15 @@ with st.sidebar:
         use_siglip_cap = st.checkbox("SigLIP2 Caption", value=True, key="cap_use_siglip")
         use_fuzzy = st.checkbox("Fuzzy Caption", value=True, key="cap_use_fuzzy")
         use_rrf = st.checkbox("RRF Caption", value=True, key="cap_use_rrf")
+    elif mode == "OCR":
+        st.caption("Single leg: fuzzy text search only, no embedding leg.")
+    elif mode == "Summary":
+        use_siglip_sum = st.checkbox("SigLIP2 Summary", value=True, key="sum_use_siglip")
+        use_fuzzy = st.checkbox("Fuzzy Summary", value=True, key="sum_use_fuzzy")
+        use_rrf = st.checkbox("RRF Summary", value=True, key="sum_use_rrf")
+    elif mode == "Mixed":
+        w = st.session_state.mixed_weights
+        st.caption(f"Weights — Keyframe {w['Keyframe']} · ASR {w['ASR']} · Caption {w['Caption']} · OCR {w['OCR']}")
 
 if mode == "Keyframe":
     if query:
@@ -754,13 +1236,13 @@ if mode == "Keyframe":
 
         if use_siglip2:
             st.subheader("SigLIP2")
-            render_grid(df_to_results(siglip2_df.head(top_k), "score"), "kf_sig", group_by_video)
+            render_grid(df_to_results(siglip2_df.head(top_k), "score"), "kf_sig", group_mode)
         if use_clip:
             st.subheader("CLIP")
-            render_grid(df_to_results(clip_df.head(top_k), "score"), "kf_clip", group_by_video)
+            render_grid(df_to_results(clip_df.head(top_k), "score"), "kf_clip", group_mode)
         if use_rrf:
             st.subheader("RRF")
-            render_grid(df_to_results(rrf_fuse_frame([siglip2_df, clip_df], top_n=top_k), "rrf_score"), "kf_rrf", group_by_video)
+            render_grid(df_to_results(rrf_fuse_frame([siglip2_df, clip_df], top_n=top_k), "rrf_score"), "kf_rrf", group_mode)
         if not (use_siglip2 or use_clip or use_rrf):
             st.info("Check at least one search option in the sidebar.")
     else:
@@ -776,14 +1258,14 @@ elif mode == "ASR":
 
         if use_siglip_asr:
             st.subheader("SigLIP2 ASR")
-            render_grid(df_to_results(attach_keyframe_asr(siglip_df).head(top_k), "score", "text"), "asr_sig", group_by_video)
+            render_grid(df_to_results(attach_keyframe_asr(siglip_df).head(top_k), "score", "text"), "asr_sig", group_mode)
         if use_fuzzy:
             st.subheader("Fuzzy ASR")
-            render_grid(df_to_results(attach_keyframe_asr(fuzzy_df).head(top_k), "score", "text"), "asr_fuzzy", group_by_video)
+            render_grid(df_to_results(attach_keyframe_asr(fuzzy_df).head(top_k), "score", "text"), "asr_fuzzy", group_mode)
         if use_rrf:
             st.subheader("RRF ASR")
             fused = attach_keyframe_asr(rrf_fuse_asr({"siglip_asr": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
-            render_grid(df_to_results(fused, "rrf_score", "text"), "asr_rrf", group_by_video)
+            render_grid(df_to_results(fused, "rrf_score", "text"), "asr_rrf", group_mode)
         if not (use_siglip_asr or use_fuzzy or use_rrf):
             st.info("Check at least one search option in the sidebar.")
     else:
@@ -799,15 +1281,69 @@ elif mode == "Caption":
 
         if use_siglip_cap:
             st.subheader("SigLIP2 Caption")
-            render_grid(df_to_results(attach_keyframe_caption(siglip_df).head(top_k), "score", "text"), "cap_sig", group_by_video)
+            render_grid(df_to_results(attach_keyframe_caption(siglip_df).head(top_k), "score", "text"), "cap_sig", group_mode)
         if use_fuzzy:
             st.subheader("Fuzzy Caption")
-            render_grid(df_to_results(attach_keyframe_caption(fuzzy_df).head(top_k), "score", "text"), "cap_fuzzy", group_by_video)
+            render_grid(df_to_results(attach_keyframe_caption(fuzzy_df).head(top_k), "score", "text"), "cap_fuzzy", group_mode)
         if use_rrf:
             st.subheader("RRF Caption")
             fused = attach_keyframe_caption(rrf_fuse_caption({"siglip_caption": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
-            render_grid(df_to_results(fused, "rrf_score", "text"), "cap_rrf", group_by_video)
+            render_grid(df_to_results(fused, "rrf_score", "text"), "cap_rrf", group_mode)
         if not (use_siglip_cap or use_fuzzy or use_rrf):
             st.info("Check at least one search option in the sidebar.")
+    else:
+        st.info("Type a query to search.")
+
+elif mode == "OCR":
+    if query:
+        df = apply_filters(search_ocr_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+        st.subheader("Fuzzy OCR")
+        render_grid(df_to_results(attach_keyframe_ocr(df).head(top_k), "score", "text"), "ocr_fuzzy", group_mode)
+    else:
+        st.info("Type a query to search.")
+
+elif mode == "Summary":
+    if query:
+        siglip_df = fuzzy_df = None
+        if use_siglip_sum or use_rrf:
+            siglip_df = apply_filters(search_siglip_summary(query, k=fetch_k), video_filter, lot_filter)
+        if use_fuzzy or use_rrf:
+            fuzzy_df = apply_filters(search_summary_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+
+        if use_siglip_sum:
+            st.subheader("SigLIP2 Summary")
+            render_grid(df_to_results(attach_keyframe_summary(siglip_df).head(top_k), "score", "text"), "sum_sig", group_mode)
+        if use_fuzzy:
+            st.subheader("Fuzzy Summary")
+            render_grid(df_to_results(attach_keyframe_summary(fuzzy_df).head(top_k), "score", "text"), "sum_fuzzy", group_mode)
+        if use_rrf:
+            st.subheader("RRF Summary")
+            fused = attach_keyframe_summary(rrf_fuse_summary({"siglip_summary": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
+            render_grid(df_to_results(fused, "rrf_score", "text"), "sum_rrf", group_mode)
+        if not (use_siglip_sum or use_fuzzy or use_rrf):
+            st.info("Check at least one search option in the sidebar.")
+    else:
+        st.info("Type a query to search.")
+
+elif mode == "Mixed":
+    if query:
+        weights = st.session_state.mixed_weights
+        legs = st.session_state.mixed_legs
+        signal_dfs = {}
+        if weights.get("Keyframe", 0):
+            signal_dfs["Keyframe"] = _mixed_keyframe_df(query, fetch_k, video_filter, lot_filter, legs)
+        if weights.get("ASR", 0):
+            signal_dfs["ASR"] = _mixed_asr_df(query, fetch_k, video_filter, lot_filter, legs)
+        if weights.get("Caption", 0):
+            signal_dfs["Caption"] = _mixed_caption_df(query, fetch_k, video_filter, lot_filter, legs)
+        if weights.get("OCR", 0):
+            signal_dfs["OCR"] = _mixed_ocr_df(query, fetch_k, video_filter, lot_filter)
+
+        if not signal_dfs:
+            st.info("Every signal weight is 0 — open **Change weights** and enable at least one.")
+        else:
+            st.subheader("Mixed (weighted RRF)")
+            fused = rrf_fuse_weighted(signal_dfs, weights, top_n=top_k)
+            render_grid(df_to_results(fused, "rrf_score"), "mixed", group_mode)
     else:
         st.info("Type a query to search.")
