@@ -11,14 +11,11 @@ caches) except the fuzzy-text legs, which use a local Elasticsearch.
 
 ```
 pipeline/
-  config.py          paths + constants shared by routing101.py and the text encoders
+  config.py          paths + constants shared by the notebooks and the text encoders
   clip_encoder.py     Multilingual-CLIP text tower, paired with CLIP ViT-B/32 image features
-  viclip_encoder.py   ViCLIP-OT text tower (routing101.py --backend viclip)
-  loader.py           per-video frame embeddings + timestamp join (routing101.py)
 ui/
   app.py              combined Streamlit UI — all three layers below, one process
 index/                generated FAISS indices (git-ignored), reused across app runs
-routing101.py          CLI: single-embedding-space text -> frame search (see its docstring)
 routing101.ipynb        annotated walkthrough: keyframe embeddings (SigLIP2 / CLIP ViT-B/32 / RRF)
 routing101_asr.ipynb     annotated walkthrough: ASR-segment search + RRF, mapped to keyframes
 routing101_caption.ipynb annotated walkthrough: frame-caption search + RRF, mapped to keyframes
@@ -80,13 +77,3 @@ docker run -d --name es -p 9200:9200 -e "discovery.type=single-node" \
 
 If ES isn't reachable, the fuzzy leg degrades to an empty result (with an
 on-page warning) rather than breaking the other legs.
-
-## CLI
-
-```
-python routing101.py "a man riding a motorbike" --backend siglip2 --k 100
-python routing101.py --eval queries.csv --backend clip_vitb32
-```
-
-See `routing101.py`'s module docstring for the three selectable backends
-(`siglip2`, `clip_vitb32`, `viclip`) and their on-disk index caching.
