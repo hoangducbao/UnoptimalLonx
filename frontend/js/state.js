@@ -72,6 +72,12 @@ export const trakeState = {
     nextId: 1,
 };
 
+// Hierarchy: per-video Top-G override, mirrors ui/app.py's
+// session_state.hier_extra_g (ui/app.py:2136-2137) -- the "Expand" button
+// bumps just that one video's effective G by +10, independent of every
+// other group and of the sidebar's Top-G control.
+export const hierExtraG = new Map(); // video_id -> extra G (multiples of 10)
+
 export function getNeighborExtra(videoId, centerN) {
     const key = `${videoId}_${centerN}`;
     if (!state.neighborExtra.has(key)) {

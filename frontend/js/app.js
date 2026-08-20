@@ -13,6 +13,7 @@ import * as ocr from "./signals/ocr.js";
 import * as summary from "./signals/summary.js";
 import * as mixed from "./signals/mixed.js";
 import * as trake from "./signals/trake.js";
+import * as hierarchy from "./signals/hierarchy.js";
 
 const SIGNALS = {
     Keyframe: keyframe,
@@ -22,6 +23,7 @@ const SIGNALS = {
     Summary: summary,
     Mixed: mixed,
     TRAKE: trake,
+    Hierarchy: hierarchy,
 };
 
 const resultsEl = document.getElementById("results");
@@ -58,7 +60,7 @@ document.querySelectorAll(".signal-btn").forEach((btn) => {
 // actually affect a search -- clicking "Show more"/"Copy" doesn't touch
 // these listeners at all, so there's no wasted-recompute problem to guard
 // against here in the first place).
-["top-k", "top-v", "video-filter", "use-video-scope", "lot-filter", "use-collection-scope",
+["top-k", "top-v", "top-g", "video-filter", "use-video-scope", "lot-filter", "use-collection-scope",
  "group-by-video", "show-full-text"].forEach((id) => {
     document.getElementById(id).addEventListener("change", runCurrentSearch);
 });

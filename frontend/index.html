@@ -22,7 +22,7 @@
     <div class="signal-row">
       <button class="signal-btn" data-signal="Mixed" title="Mixed">🔀</button>
       <button class="signal-btn" data-signal="TRAKE" title="TRAKE">🧭</button>
-      <button class="signal-btn" data-signal="Hierarchy" title="Hierarchy" disabled>🌳</button>
+      <button class="signal-btn" data-signal="Hierarchy" title="Hierarchy">🌳</button>
     </div>
 
     <div id="standard-query-section">
@@ -64,6 +64,10 @@
       <div id="top-v-wrap" style="display:none;">
         <label for="top-v">Top-V</label>
         <input type="number" id="top-v" value="10" min="1" max="50" step="1">
+      </div>
+      <div id="top-g-wrap" style="display:none;">
+        <label for="top-g" title="Frames kept per video after per-video drill-down.">Top-G</label>
+        <input type="number" id="top-g" value="5" min="1" max="50" step="1">
       </div>
     </div>
 
