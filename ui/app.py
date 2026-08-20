@@ -35,6 +35,8 @@ modes. The CLIP ViT-B/32 leg is Keyframe-only (dropped from the other
 embedding legs per the current scope -- SigLIP2 + fuzzy + RRF only there).
 """
 
+import base64
+import json
 import re
 import sys
 from pathlib import Path
@@ -59,7 +61,7 @@ import clip_encoder  # noqa: E402  (pipeline/clip_encoder.py) -- Multilingual-CL
 # ---------------------------------------------------------------------------
 
 FETCH_K = 100      # candidates pulled per leg, gives RRF a real pool to fuse
-DISPLAY_N = 20
+DISPLAY_N = 30
 RRF_K = 60
 NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id
 
@@ -82,6 +84,7 @@ SUMMARY_EMBED_DIR.mkdir(parents=True, exist_ok=True)
 
 MAP_KEYFRAMES_DIR = Path("D:/University/Summ26/AICData/map-keyframes")
 THUMBNAIL_ROOT = Path("D:/University/Summ26/AICData/keyframes")
+VIDEO_DIR = Path("D:/University/Summ26/AICData/video")  # TRAKE playback dialog
 
 INDEX_DIR = REPO_ROOT / "index"
 ASR_INDEX_DIR = INDEX_DIR / "routing101_asr"
@@ -193,6 +196,24 @@ def nearest_keyframe_n_by_time(video_id: str, t: float):
         return None
     idx = (mk["pts_time"] - t).abs().idxmin()
     return int(mk.loc[idx, "n"])
+
+
+def keyframe_timestamp(video_id: str, n):
+    """Symmetric counterpart to nearest_keyframe_n_by_time: direct n ->
+    (pts_time, fps) lookup, used by TRAKE to place a matched frame on the
+    video timeline. Returns (None, None) if unresolvable."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty or n is None or pd.isna(n):
+        return None, None
+    hit = mk.loc[mk["n"] == int(n)]
+    if hit.empty:
+        return None, None
+    row = hit.iloc[0]
+    return float(row["pts_time"]), float(row["fps"])
+
+
+def video_path(video_id: str) -> str:
+    return str(VIDEO_DIR / f"{video_id}.mp4")
 
 
 @st.cache_data(show_spinner=False)
@@ -850,6 +871,142 @@ def rrf_fuse_weighted(signal_dfs: dict, weights: dict, k: int = RRF_K, top_n: in
 
 
 # ---------------------------------------------------------------------------
+# Mode 7 — TRAKE: an ordered list of event sub-queries (each with its own
+# text + one of the other six signals), find videos where every event's
+# best-matching frame occurs in the declared order. Reuses each signal's
+# existing search + RRF pipeline UNSCOPED (no video/lot filter -- TRAKE
+# searches the whole corpus per event, on purpose), then adds a video-level
+# coverage/order/score layer on top. No new embedding models, no new
+# per-signal fusion logic -- see TRAKE_SPEC.md.
+# ---------------------------------------------------------------------------
+
+def trake_search_event(query: str, signal: str, fetch_k: int, video_filter: str = "", lot_filter=None) -> pd.DataFrame:
+    """One TRAKE event's candidate frames for `signal`, normalized to
+    [video_id, n, rank, score] (+text where the signal carries one).
+    Dispatches to the exact same search + RRF calls the standalone signal
+    modes already make -- see the `elif mode == ...` blocks below. Scoping
+    (video_filter/lot_filter) is optional -- TRAKE_SPEC.md's default is an
+    unscoped whole-corpus search per event, but the UI lets a user narrow
+    every event to one video/collection same as the other signals."""
+    empty = pd.DataFrame(columns=["video_id", "n", "rank", "score", "text"])
+    if not query:
+        return empty
+
+    if signal == "Keyframe":
+        siglip2_df = apply_filters(search_siglip2_frame(query, k=fetch_k), video_filter, lot_filter)
+        clip_df = apply_filters(search_clip_frame(query, k=fetch_k), video_filter, lot_filter)
+        df = rrf_fuse_frame([siglip2_df, clip_df], top_n=fetch_k)
+        return empty if df.empty else df.rename(columns={"rrf_score": "score"})[["video_id", "n", "rank", "score"]]
+
+    if signal == "ASR":
+        siglip_df = apply_filters(search_siglip_asr(query, k=fetch_k), video_filter, lot_filter)
+        fuzzy_df = apply_filters(search_asr_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+        fused = attach_keyframe_asr(rrf_fuse_asr({"siglip_asr": siglip_df, "fuzzy": fuzzy_df}, top_n=fetch_k))
+        return empty if fused is None or fused.empty else fused.rename(columns={"rrf_score": "score"})[["video_id", "n", "rank", "score", "text"]]
+
+    if signal == "Caption":
+        siglip_df = apply_filters(search_siglip_caption(query, k=fetch_k), video_filter, lot_filter)
+        fuzzy_df = apply_filters(search_caption_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+        fused = attach_keyframe_caption(rrf_fuse_caption({"siglip_caption": siglip_df, "fuzzy": fuzzy_df}, top_n=fetch_k))
+        return empty if fused is None or fused.empty else fused.rename(columns={"rrf_score": "score"})[["video_id", "n", "rank", "score", "text"]]
+
+    if signal == "OCR":
+        df = attach_keyframe_ocr(apply_filters(search_ocr_fuzzy(query, k=fetch_k), video_filter, lot_filter))
+        return empty if df is None or df.empty else df[["video_id", "n", "rank", "score", "text"]]
+
+    if signal == "Summary":
+        siglip_df = apply_filters(search_siglip_summary(query, k=fetch_k), video_filter, lot_filter)
+        fuzzy_df = apply_filters(search_summary_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+        fused = attach_keyframe_summary(rrf_fuse_summary({"siglip_summary": siglip_df, "fuzzy": fuzzy_df}, top_n=fetch_k))
+        return empty if fused is None or fused.empty else fused.rename(columns={"rrf_score": "score"})[["video_id", "n", "rank", "score", "text"]]
+
+    if signal == "Mixed":
+        # rrf_fuse_weighted only ever reads "rank" off its inputs (never a
+        # score column), so the existing _mixed_*_df helpers -- already
+        # trimmed to [video_id, n, rank] -- are safe to reuse unchanged;
+        # the per-event "score" below is the weighted-RRF score, same as
+        # standalone Mixed mode's own rrf_score.
+        weights = st.session_state.mixed_weights
+        legs = st.session_state.mixed_legs
+        signal_dfs = {}
+        if weights.get("Keyframe", 0):
+            signal_dfs["Keyframe"] = _mixed_keyframe_df(query, fetch_k, video_filter, lot_filter, legs)
+        if weights.get("ASR", 0):
+            signal_dfs["ASR"] = _mixed_asr_df(query, fetch_k, video_filter, lot_filter, legs)
+        if weights.get("Caption", 0):
+            signal_dfs["Caption"] = _mixed_caption_df(query, fetch_k, video_filter, lot_filter, legs)
+        if weights.get("OCR", 0):
+            signal_dfs["OCR"] = _mixed_ocr_df(query, fetch_k, video_filter, lot_filter)
+        if not signal_dfs:
+            return empty
+        fused = rrf_fuse_weighted(signal_dfs, weights, top_n=fetch_k)
+        return empty if fused.empty else fused.rename(columns={"rrf_score": "score"})[["video_id", "n", "rank", "score"]]
+
+    raise ValueError(f"unknown TRAKE event signal: {signal!r}")
+
+
+def trake_rank_videos(event_dfs: list, labels: list, top_n: int,
+                       bonus_video_ids: set = None, bonus_multiplier: float = 1.10) -> list:
+    """TRAKE_SPEC.md Steps 2-4: group each event's candidates by video
+    (keeping only the best-ranked hit per video per event), hard-drop any
+    video whose matched-event timestamps aren't strictly increasing in the
+    declared order, then rank survivors by coverage * mean(score across
+    matched events). `labels` is the display label per event_dfs slot
+    (e.g. "E0" for an included context query, "E1"/"E2"/... for the
+    required events) -- kept separate from the 0-indexed event_index so
+    the context row's presence/absence doesn't shift the required events'
+    numbering. `bonus_video_ids` (from the optional context query's own
+    top-K/2 results, computed by the caller) gets a flat score multiplier
+    -- applied before the final sort/top_n cut so it can actually affect
+    which videos make the cut, not just their displayed order within it."""
+    n_events = len(event_dfs)
+    best_by_video: dict = {}  # video_id -> {event_index: row}
+    for i, df in enumerate(event_dfs):
+        if df is None or df.empty:
+            continue
+        best = df.sort_values("rank").groupby("video_id", as_index=False).first()
+        for _, row in best.iterrows():
+            best_by_video.setdefault(row["video_id"], {})[i] = row
+
+    candidates = []
+    for video_id, matched in best_by_video.items():
+        events, timestamps = [], []
+        for i in range(n_events):
+            row = matched.get(i)
+            if row is None:
+                events.append({"event_index": i, "label": labels[i], "matched": False, "timestamp": None})
+                continue
+            ts, _fps = keyframe_timestamp(video_id, row["n"])
+            text = row.get("text")
+            events.append({
+                "event_index": i, "label": labels[i], "matched": True, "video_id": video_id,
+                "n": int(row["n"]), "rank": int(row["rank"]), "score_label": "score",
+                "score_val": float(row["score"]), "text": text if isinstance(text, str) else None,
+                "timestamp": ts,
+            })
+            if ts is not None:
+                timestamps.append(ts)
+
+        # Order check runs over resolved timestamps in declared query order
+        # (events list above is already built in that order) -- hard rule
+        # per spec: any inversion drops the video outright.
+        if any(timestamps[j] >= timestamps[j + 1] for j in range(len(timestamps) - 1)):
+            continue
+
+        matched_events = [e for e in events if e["matched"]]
+        video_score = (len(matched_events) / n_events) * (sum(e["score_val"] for e in matched_events) / len(matched_events))
+        if bonus_video_ids and video_id in bonus_video_ids:
+            video_score *= bonus_multiplier
+        candidates.append({
+            "video_id": video_id, "video_score": video_score, "order_valid": True,
+            "coverage": len(matched_events) / n_events, "events": events,
+        })
+
+    candidates.sort(key=lambda c: c["video_score"], reverse=True)
+    return candidates[:top_n]
+
+
+# ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
@@ -867,6 +1024,14 @@ st.markdown("""
     box-shadow: 0 12px 32px rgba(0,0,0,0.45);
     position: relative;
 }
+/* TRAKE result cards with only 1-2 events: the zoom-on-hover above is more
+   distracting than useful with so few thumbnails already at a decent size,
+   so it's suppressed for those (kept for 3+ event cards). */
+.thumb-wrap-static:hover { z-index: 1; }
+.thumb-wrap-static:hover img { transform: none; box-shadow: none; position: static; }
+/* Enter already submits the query (see the JS below) -- hide the native
+   "Press Ctrl+Enter to apply" hint so it doesn't contradict that. */
+.st-key-query_text [data-testid="InputInstructions"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -938,18 +1103,17 @@ def _apply_default_weights():
 def change_weights_dialog():
     _stage_weights_dialog()
 
-    st.caption("Weight per signal (0 = off)")
+    st.caption("Weight per signal (0 = off) with that signal's legs alongside")
     for name in MIXED_SIGNAL_NAMES:
-        st.slider(name, min_value=0, max_value=3, key=f"mw_weight_{name}")
-
-    st.divider()
-    st.caption("Legs")
-    cols = st.columns(3)
-    for col, signal_name in zip(cols, ["Keyframe", "ASR", "Caption"]):
-        with col:
-            st.caption(f"**{signal_name}**")
-            for leg_key, leg_label in MIXED_LEG_DEFS[signal_name]:
-                st.checkbox(leg_label, key=f"mw_leg_{leg_key}")
+        col_slider, col_legs = st.columns([2, 1])
+        with col_slider:
+            st.slider(name, min_value=0, max_value=3, key=f"mw_weight_{name}")
+        with col_legs:
+            if name in MIXED_LEG_DEFS:
+                for leg_key, leg_label in MIXED_LEG_DEFS[name]:
+                    st.checkbox(leg_label, key=f"mw_leg_{leg_key}")
+            else:
+                st.caption("Detailed legs")
 
     st.divider()
     with st.container(horizontal=True):
@@ -1010,6 +1174,116 @@ def show_neighbors(video_id: str, center_n: int):
 
     if st.button("▼ 10 later", key=f"{state_key}_down", width="stretch"):
         extra["after"] += 10
+
+
+@st.dialog("Video playback", width="medium")
+def trake_playback_dialog(video_id: str, events: list):
+    """TRAKE's play-icon action: opens the source video seeked near the
+    first matched event, with a click-to-seek marker row for every matched
+    event and a live timestamp/frame readout (TRAKE_SPEC.md Step 5 -- this
+    is purely a display aid for the human doing the final scrub; it never
+    reads anything back into Streamlit/Python state)."""
+    path = video_path(video_id)
+    if not Path(path).exists():
+        st.error(f"Video file not found: {path}")
+        return
+
+    matched = [e for e in events if e["matched"] and e["timestamp"] is not None]
+    st.subheader(video_id)
+    st.video(path, start_time=int(matched[0]["timestamp"]) if matched else 0)
+
+    fps = next((keyframe_timestamp(video_id, e["n"])[1] for e in matched), None) or 25.0
+    markers = [{"event_index": e["event_index"], "ts": e["timestamp"], "label": e["label"]} for e in matched]
+
+    # Only static markup here (data-* attributes carrying the marker/fps
+    # payload, base64'd to dodge HTML-attribute quoting entirely) -- no
+    # <script> tag. st.html's embedded scripts don't run when the call
+    # site is inside an @st.dialog function (confirmed empirically: the
+    # identical script executes fine from the main page body but never
+    # fires from here, even with unsafe_allow_javascript=True and no
+    # console errors). The one script that actually does this element's
+    # binding lives in the main page body instead -- see
+    # trake_playback_binder_script() below, rendered once per TRAKE
+    # results view -- and finds these elements via MutationObserver, the
+    # same proven-working pattern as the sidebar's Enter-key script.
+    markers_b64 = base64.b64encode(json.dumps(markers).encode()).decode()
+    st.html(f"""
+    <div id="trake-marker-bar" data-fps="{fps}" data-markers-b64="{markers_b64}" style="position:relative;
+        height:18px;margin:4px 0 8px;background:rgba(127,127,127,0.15);border-radius:4px;"></div>
+    <div id="trake-timer" style="font-family:monospace;font-size:0.9rem;">--:-- · frame --</div>
+    """)
+
+    gaps = [e for e in events if not e["matched"]]
+    if gaps:
+        st.divider()
+        st.caption("Coverage gaps — scrub manually between the nearest matched anchors:")
+        for e in gaps:
+            idx = e["event_index"]
+            before = [m for m in matched if m["event_index"] < idx]
+            after = [m for m in matched if m["event_index"] > idx]
+            lo = f"{before[-1]['timestamp']:.2f}s ({before[-1]['label']})" if before else "start"
+            hi = f"{after[0]['timestamp']:.2f}s ({after[0]['label']})" if after else "end"
+            st.write(f"{e['label']}: no direct match — between **{lo}** and **{hi}**")
+
+
+def render_trake_playback_binder():
+    """Companion to trake_playback_dialog's marker-bar markup: rendered
+    once from the main page body (NOT from inside the dialog -- st.html's
+    embedded <script> silently never executes when the call site is
+    inside an @st.dialog function, confirmed empirically) so it actually
+    runs, then watches for the dialog's #trake-marker-bar div via the same
+    MutationObserver pattern the sidebar's Enter-key script uses, and
+    binds the click-to-seek markers + live timer to whichever <video> is
+    on the page at the time."""
+    st.html("""
+    <script>
+    (function() {
+        function bindOne(bar) {
+            if (bar.dataset.trakeBound) return;
+            const video = document.querySelector('video');
+            const timer = document.getElementById('trake-timer');
+            if (!video || !timer) return;
+            bar.dataset.trakeBound = "1";
+            const fps = parseFloat(bar.dataset.fps) || 25.0;
+            const markers = JSON.parse(atob(bar.dataset.markersB64));
+
+            function layoutMarkers() {
+                if (!video.duration || !isFinite(video.duration)) return;
+                bar.innerHTML = "";
+                markers.forEach(function(m) {
+                    const pct = Math.max(0, Math.min(100, (m.ts / video.duration) * 100));
+                    const tick = document.createElement('div');
+                    tick.title = m.label + ' @ ' + m.ts.toFixed(2) + 's';
+                    tick.textContent = m.label;
+                    tick.style.cssText = 'position:absolute;left:' + pct + '%;top:0;bottom:0;' +
+                        'transform:translateX(-50%);cursor:pointer;background:#e64980;color:white;' +
+                        'font-size:10px;padding:0 4px;border-radius:3px;line-height:18px;';
+                    tick.addEventListener('click', function() { video.currentTime = m.ts; });
+                    bar.appendChild(tick);
+                });
+            }
+
+            function fmtTime(t) {
+                const mm = Math.floor(t / 60).toString().padStart(2, '0');
+                const ss = (t % 60).toFixed(2).padStart(5, '0');
+                return mm + ':' + ss;
+            }
+
+            video.addEventListener('loadedmetadata', layoutMarkers);
+            if (video.readyState >= 1) layoutMarkers();
+            video.addEventListener('timeupdate', function() {
+                timer.textContent = fmtTime(video.currentTime) + ' · frame ' + Math.round(video.currentTime * fps);
+            });
+        }
+        function scan() {
+            const bar = document.getElementById('trake-marker-bar');
+            if (bar) bindOne(bar);
+        }
+        scan();
+        new MutationObserver(scan).observe(document.body, {childList: true, subtree: true});
+    })();
+    </script>
+    """, unsafe_allow_javascript=True)
 
 
 def render_thumb(col, r: dict):
@@ -1121,49 +1395,171 @@ SIGNAL_ICONS = {
     "OCR": ":material/photo_camera:",
     "Summary": ":material/edit:",
     "Mixed": ":material/call_merge:",
+    "TRAKE": ":material/route:",
 }
+
+# Signal choices offered per TRAKE event row -- same six as the segmented
+# control above, computed once so it stays in sync if SIGNAL_ICONS changes.
+TRAKE_EVENT_SIGNALS = [name for name in SIGNAL_ICONS if name != "TRAKE"]
 
 with st.sidebar:
     st.header("Search")
 
-    mode = st.segmented_control("Signal", options=list(SIGNAL_ICONS.keys()),
-                                 format_func=lambda m: SIGNAL_ICONS[m],
-                                 default="Keyframe", key="mode", help=", ".join(SIGNAL_ICONS.keys()))
+    # Two rows: the five frame/text signals, then Mixed + TRAKE on their own
+    # row below. Two independent segmented_control widgets (Streamlit has no
+    # multi-row option within one) kept mutually exclusive via on_change --
+    # picking one clears the other's key so exactly one of the two is ever
+    # highlighted, and `mode` is just whichever key is non-None.
+    ROW1_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR", "Summary"]
+    ROW2_SIGNALS = ["Mixed", "TRAKE"]
+    st.session_state.setdefault("mode_row1", "Keyframe")
+    st.session_state.setdefault("mode_row2", None)
 
-    # A plain keyed text_area (not st.chat_input) so the query stays visible
-    # in the box after searching -- st.chat_input always clears on submit
-    # and has no way to pre-fill a value. To still get Enter-submits-no-
-    # manual-newline (text_area's native Enter always inserts a newline),
-    # a small JS snippet intercepts Enter on the underlying <textarea> and
-    # blurs it instead, which is what actually commits a text_area's value
-    # and triggers the rerun -- the box still soft-wraps long text on its
-    # own, it just never accepts an explicit newline from the user.
-    query = st.text_area("Query", placeholder="e.g. một người đàn ông đang lái xe máy",
-                          key="query_text", label_visibility="collapsed")
-    st.html("""
-    <script>
-    (function() {
-        function bind() {
-            const ta = document.querySelector('.st-key-query_text textarea');
-            if (!ta || ta.dataset.enterSubmitBound) return;
-            ta.dataset.enterSubmitBound = "1";
-            ta.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && !e.isComposing) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    ta.blur();
-                }
-            });
-        }
-        bind();
-        new MutationObserver(bind).observe(document.body, {childList: true, subtree: true});
-    })();
-    </script>
-    """, unsafe_allow_javascript=True)
+    def _pick_row1():
+        st.session_state.mode_row2 = None
 
-    if mode == "Mixed":
-        if st.button("Change weights", icon=":material/tune:"):
+    def _pick_row2():
+        st.session_state.mode_row1 = None
+
+    st.segmented_control("Signal", options=ROW1_SIGNALS, format_func=lambda m: SIGNAL_ICONS[m],
+                          key="mode_row1", label_visibility="collapsed", on_change=_pick_row1)
+    st.segmented_control("Signal (row 2)", options=ROW2_SIGNALS, format_func=lambda m: SIGNAL_ICONS[m],
+                          key="mode_row2", label_visibility="collapsed", on_change=_pick_row2)
+    mode = st.session_state.mode_row2 or st.session_state.mode_row1 or "Keyframe"
+
+    def _weights_button(key: str):
+        """Shared by Mixed mode and any TRAKE row (context or event) whose
+        signal is set to Mixed -- Mixed has no per-row weight config of its
+        own, they all share the one st.session_state.mixed_weights/legs
+        dict, same as standalone Mixed mode."""
+        if st.button(":material/tune:", key=key, help="Change weights"):
             change_weights_dialog()
+
+    query = None
+    if mode != "TRAKE":
+        # A plain keyed text_area (not st.chat_input) so the query stays
+        # visible in the box after searching -- st.chat_input always clears
+        # on submit and has no way to pre-fill a value. To still get
+        # Enter-submits-no-manual-newline (text_area's native Enter always
+        # inserts a newline), a small JS snippet intercepts Enter on the
+        # underlying <textarea> and blurs it instead, which is what
+        # actually commits a text_area's value and triggers the rerun --
+        # the box still soft-wraps long text on its own, it just never
+        # accepts an explicit newline from the user.
+        query = st.text_area("Query", placeholder="e.g. một người đàn ông đang lái xe máy",
+                              key="query_text", label_visibility="collapsed")
+        st.html("""
+        <script>
+        (function() {
+            function bind() {
+                const ta = document.querySelector('.st-key-query_text textarea');
+                if (!ta || ta.dataset.enterSubmitBound) return;
+                ta.dataset.enterSubmitBound = "1";
+                ta.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' && !e.isComposing) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        ta.blur();
+                    }
+                });
+            }
+            bind();
+            new MutationObserver(bind).observe(document.body, {childList: true, subtree: true});
+        })();
+        </script>
+        """, unsafe_allow_javascript=True)
+
+        if mode == "Mixed":
+            _weights_button("mixed_weights_btn")
+            w = st.session_state.mixed_weights
+            st.caption(f"Weights — Keyframe {w['Keyframe']} · ASR {w['ASR']} · Caption {w['Caption']} · OCR {w['OCR']}")
+    else:
+        # TRAKE: an optional context row (E0 -- defaults to Summary, can be
+        # left blank, contributes a top-K/2 ranking bonus -- see
+        # trake_rank_videos) plus a dynamic list of required event rows
+        # (E1, E2, ... -- minimum 1). Row order among E1+ IS the required
+        # temporal order (TRAKE_SPEC.md); E0 slots into that same ordered
+        # chain when filled in. Each row is 2 lines: the query text (an
+        # auto-wrapping text_area, same as the single-signal Query box)
+        # then a second line of signal + (Mixed only) weights + remove.
+        # Rows carry a stable "id" used as their widget key (NOT list
+        # index) -- widget state is keyed by session key, so keying by
+        # position would show stale text/signal on rows after a mid-list
+        # removal shifts them into a lower-numbered slot.
+        st.session_state.setdefault("trake_context", {"text": "", "signal": "Summary"})
+        st.session_state.setdefault("trake_events", [{"id": 0, "text": "", "signal": "Keyframe"}])
+        st.session_state.setdefault("trake_next_id", 1)
+
+        st.caption("Context — E0 (optional, boosts matching videos)")
+        ctx = st.session_state.trake_context
+        ctx["text"] = st.text_area("Context text", value=ctx["text"], placeholder="optional context query",
+                                    key="trake_ctx_text", label_visibility="collapsed", height=68)
+        col_ctx_sig, col_ctx_w = st.columns([4, 1])
+        ctx["signal"] = col_ctx_sig.selectbox("Context signal", TRAKE_EVENT_SIGNALS,
+                                               index=TRAKE_EVENT_SIGNALS.index(ctx["signal"]),
+                                               key="trake_ctx_signal", label_visibility="collapsed")
+        if ctx["signal"] == "Mixed":
+            with col_ctx_w:
+                _weights_button("trake_ctx_weights_btn")
+
+        st.divider()
+        st.caption("Events, in required order")
+        for i, ev in enumerate(st.session_state.trake_events):
+            key_id = ev["id"]
+            ev["text"] = st.text_area(f"Event {i + 1} text", value=ev["text"], placeholder=f"E{i + 1} query text",
+                                       key=f"trake_ev_text_{key_id}", label_visibility="collapsed", height=68)
+            # Read the widget's OWN current session_state value (not ev
+            # ["signal"], which still holds last rerun's value until the
+            # selectbox below re-assigns it) so the weights button appears
+            # the same rerun a user switches this row to Mixed, not one
+            # rerun later.
+            if st.session_state.get(f"trake_ev_signal_{key_id}", ev["signal"]) == "Mixed":
+                col_sig, col_w, col_rm = st.columns([3, 1, 1])
+                with col_w:
+                    _weights_button(f"trake_ev_weights_{key_id}")
+            else:
+                col_sig, col_rm = st.columns([4, 1])
+            ev["signal"] = col_sig.selectbox(f"Event {i + 1} signal", TRAKE_EVENT_SIGNALS,
+                                              index=TRAKE_EVENT_SIGNALS.index(ev["signal"]),
+                                              key=f"trake_ev_signal_{key_id}", label_visibility="collapsed")
+            if col_rm.button(":material/close:", key=f"trake_ev_rm_{key_id}", disabled=len(st.session_state.trake_events) <= 1,
+                              help="Remove event"):
+                st.session_state.trake_events.pop(i)
+                st.rerun()
+        if st.button("Add event", icon=":material/add:"):
+            new_id = st.session_state.trake_next_id
+            st.session_state.trake_next_id += 1
+            st.session_state.trake_events.append({"id": new_id, "text": "", "signal": "Keyframe"})
+            st.rerun()
+
+        # Same Enter-submits-no-manual-newline trick as the single-signal
+        # Query box above, generalized to every context/event text_area at
+        # once (class-prefix selector, not a fixed id) since rows are added
+        # and removed dynamically -- MutationObserver re-scans and binds
+        # any newly-added row's textarea the same way.
+        st.html("""
+        <script>
+        (function() {
+            function bindAll() {
+                const areas = document.querySelectorAll(
+                    '[class*="st-key-trake_ev_text_"] textarea, [class*="st-key-trake_ctx_text"] textarea');
+                areas.forEach(function(ta) {
+                    if (ta.dataset.enterSubmitBound) return;
+                    ta.dataset.enterSubmitBound = "1";
+                    ta.addEventListener('keydown', function(e) {
+                        if (e.key === 'Enter' && !e.isComposing) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            ta.blur();
+                        }
+                    });
+                });
+            }
+            bindAll();
+            new MutationObserver(bindAll).observe(document.body, {childList: true, subtree: true});
+        })();
+        </script>
+        """, unsafe_allow_javascript=True)
 
     st.session_state.setdefault("use_video_scope", False)
     st.session_state.setdefault("use_collection_scope", False)
@@ -1184,21 +1580,29 @@ with st.sidebar:
     video_filter = video_filter_text if use_video_scope else ""
     lot_filter = parse_lot_range(lot_filter_text) if use_collection_scope else None
 
+    group_mode, trake_top_v = None, DISPLAY_N
+
     def _snap_top_k():
         st.session_state.top_k = round_top_k(st.session_state.top_k)
 
-    st.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
-                     key="top_k", on_change=_snap_top_k)
+    if mode == "TRAKE":
+        col_k, col_v2 = st.columns(2)
+        col_k.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
+                            key="top_k", on_change=_snap_top_k)
+        trake_top_v = col_v2.number_input("Top-V", min_value=1, max_value=50, value=10, step=1, key="trake_top_v")
+    else:
+        st.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
+                         key="top_k", on_change=_snap_top_k)
     top_k = round_top_k(st.session_state.top_k)
     fetch_k = max(FETCH_K, top_k)
 
-    # Summary results are already one-per-video, so "group by video" would
-    # be a no-op there -- group by collection (lot) instead.
-    group_toggle_label = "Group by collection" if mode == "Summary" else "Group by video"
-    group_toggled = st.toggle(group_toggle_label, key="group_by_video")
-    group_mode = None
-    if group_toggled:
-        group_mode = "collection" if mode == "Summary" else "video"
+    if mode != "TRAKE":
+        # Summary results are already one-per-video, so "group by video"
+        # would be a no-op there -- group by collection (lot) instead.
+        group_toggle_label = "Group by collection" if mode == "Summary" else "Group by video"
+        group_toggled = st.toggle(group_toggle_label, key="group_by_video")
+        if group_toggled:
+            group_mode = "collection" if mode == "Summary" else "video"
 
     st.toggle("Show full text", key="show_full_text")
 
@@ -1222,9 +1626,6 @@ with st.sidebar:
         use_siglip_sum = st.checkbox("SigLIP2 Summary", value=True, key="sum_use_siglip")
         use_fuzzy = st.checkbox("Fuzzy Summary", value=True, key="sum_use_fuzzy")
         use_rrf = st.checkbox("RRF Summary", value=True, key="sum_use_rrf")
-    elif mode == "Mixed":
-        w = st.session_state.mixed_weights
-        st.caption(f"Weights — Keyframe {w['Keyframe']} · ASR {w['ASR']} · Caption {w['Caption']} · OCR {w['OCR']}")
 
 if mode == "Keyframe":
     if query:
@@ -1347,3 +1748,86 @@ elif mode == "Mixed":
             render_grid(df_to_results(fused, "rrf_score"), "mixed", group_mode)
     else:
         st.info("Type a query to search.")
+
+elif mode == "TRAKE":
+    events_cfg = st.session_state.get("trake_events", [])
+    texts = [ev["text"].strip() for ev in events_cfg]
+    if len(events_cfg) < 1 or not all(texts):
+        st.info("Fill in every event's query text to search (minimum 1 event).")
+    else:
+        ctx = st.session_state.get("trake_context", {"text": "", "signal": "Summary"})
+        ctx_text = ctx["text"].strip()
+
+        # Context query (E0) is optional: when filled in it slots into the
+        # SAME ordered chain as E1+ (must precede them, contributes to
+        # coverage) -- when left blank it's dropped entirely rather than
+        # counted as an always-missing event, so it never drags down every
+        # other video's coverage fraction.
+        all_dfs, labels = [], []
+        if ctx_text:
+            all_dfs.append(trake_search_event(ctx_text, ctx["signal"], fetch_k, video_filter, lot_filter))
+            labels.append("E0")
+        for i, ev in enumerate(events_cfg):
+            all_dfs.append(trake_search_event(ev["text"], ev["signal"], fetch_k, video_filter, lot_filter))
+            labels.append(f"E{i + 1}")
+
+        # Context bonus: any video in the context query's own top-(Top-K/2)
+        # candidates gets a flat score bump, independent of whether that
+        # video also satisfies the ordered-chain match above.
+        bonus_video_ids = None
+        if ctx_text:
+            ctx_df = all_dfs[0]
+            if ctx_df is not None and not ctx_df.empty:
+                half = max(1, top_k // 2)
+                bonus_video_ids = set(ctx_df.sort_values("rank").head(half)["video_id"])
+
+        candidates = trake_rank_videos(all_dfs, labels, trake_top_v, bonus_video_ids=bonus_video_ids)
+        render_trake_playback_binder()
+        st.subheader("TRAKE")
+        if not candidates:
+            st.info("No video matches every event in the required order. Try broader event text, "
+                     "fewer events, or a different signal per event.")
+        for c in candidates:
+            n_matched = sum(1 for e in c["events"] if e["matched"])
+            st.markdown(f"**{c['video_id']}** · video_score={c['video_score']:.4f} · "
+                        f"coverage {n_matched}/{len(c['events'])}")
+            # Force at least a 2-wide layout so a single-event result's
+            # thumbnail renders at the same size as a 2-event one, instead
+            # of stretching to the full row width.
+            n_display = len(c["events"])
+            cols = st.columns(max(2, n_display))
+            # Hover zoom (thumb-wrap's CSS :hover rule) is only useful once
+            # there are enough thumbnails that a closer look actually helps
+            # -- for 1-2 events it just makes the single/pair of frames
+            # jump around, so it's suppressed via the thumb-wrap-static
+            # modifier class below.
+            thumb_class = "thumb-wrap" if n_display >= 3 else "thumb-wrap thumb-wrap-static"
+            for col, e in zip(cols, c["events"]):
+                with col:
+                    if e["matched"]:
+                        thumb = thumbnail_path(e["video_id"], e["n"])
+                        if thumb and Path(thumb).exists():
+                            st.markdown(
+                                f'<div class="{thumb_class}"><img src="data:image/jpeg;base64,{image_b64(thumb)}"></div>',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.caption("(image not found)")
+                        st.caption(f"**{e['label']}** · frame {e['n']}")
+                        st.caption(f"{e['score_label']}={e['score_val']:.4f}")
+                    else:
+                        st.caption(f"**{e['label']}**")
+                        st.caption("no match")
+            # Single play-icon action per video: acts as both "show more"
+            # (opens playback) and "copy" (sets video/collection scope) --
+            # per-event thumbnails above are display-only, no own actions.
+            # copy_to_scope runs via on_click (not called directly here) --
+            # the scope text_input widgets above have already been
+            # instantiated by the time this line runs, and Streamlit
+            # forbids writing to a widget's session_state key after that;
+            # on_click callbacks run before the rerun that re-instantiates
+            # them, same convention render_actions' copy button uses.
+            if st.button(":material/play_circle:", key=f"trake_play_{c['video_id']}", help="Video playback",
+                          on_click=copy_to_scope, args=(c["video_id"],)):
+                trake_playback_dialog(c["video_id"], c["events"])
+            st.divider()

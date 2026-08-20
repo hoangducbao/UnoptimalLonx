@@ -71,9 +71,18 @@ use per process (cached, idempotent `_id` per doc) — no separate indexing
 step needed. Requires a local ES reachable at `http://localhost:9200`:
 
 ```
-docker run -d --name es -p 9200:9200 -e "discovery.type=single-node" \
-    -e "xpack.security.enabled=false" docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+docker run -d --name es -p 9200:9200 \
+    -e "discovery.type=single-node" \
+    -e "xpack.security.enabled=false" \
+    -e "xpack.ml.enabled=false" \
+    -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" \
+    docker.elastic.co/elasticsearch/elasticsearch:8.15.0
 ```
+
+The heap cap and disabled ML module keep ES's footprint small — this
+app's ES indices only hold short text rows for fuzzy matching (no vector
+data, that's all in FAISS), so ES's default auto-sized heap (up to ~50%
+of host RAM) is far more than needed.
 
 If ES isn't reachable, the fuzzy leg degrades to an empty result (with an
 on-page warning) rather than breaking the other legs.
