@@ -68,10 +68,17 @@ export async function openNeighborsDialog(videoId, centerN) {
     await refresh();
 }
 
+function fmtTime(t) {
+    const mm = String(Math.floor(t / 60)).padStart(2, "0");
+    const ss = (t % 60).toFixed(2).padStart(5, "0");
+    return `${mm}:${ss}`;
+}
+
 export async function openPlaybackDialog(videoId, n) {
     const body = document.createElement("div");
     body.innerHTML = `<div class="thumb-caption" style="margin-bottom:0.5rem;">${videoId} — frame ${n}</div>
-        <div id="playback-video-wrap">Loading…</div>`;
+        <div id="playback-video-wrap">Loading…</div>
+        <div id="playback-timer" style="font-family:monospace;font-size:0.9rem;margin-top:6px;">--:-- · frame --</div>`;
     const { box } = openDialog("Video playback", body);
 
     try {
@@ -83,6 +90,15 @@ export async function openPlaybackDialog(videoId, n) {
         video.controls = true;
         video.autoplay = false;
         wrap.append(video);
+
+        // Live realtime frame timer -- same fps*currentTime readout TRAKE's
+        // marker-bar playback uses (ui/app.py:1440-1442's `timeupdate`
+        // handler), just without the marker bar since there's only one
+        // frame here.
+        const timer = box.querySelector("#playback-timer");
+        video.addEventListener("timeupdate", () => {
+            timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
+        });
     } catch (e) {
         box.querySelector("#playback-video-wrap").innerHTML =
             `<div class="status-banner error">${e.message}</div>`;

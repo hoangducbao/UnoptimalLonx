@@ -18,9 +18,14 @@ router = APIRouter()
 def get_playback(video_id: str, n: int):
     if not (config.VIDEO_DIR / f"{video_id}.mp4").exists():
         raise HTTPException(404, f"Video file not found for {video_id}.")
-    ts, _fps = keyframe_timestamp(video_id, n)
+    ts, fps = keyframe_timestamp(video_id, n)
     return {
         "video_id": video_id,
         "video_url": video_url(video_id),
         "start_time": ts if ts is not None else 0,
+        # Live frame-timer support (frontend computes round(currentTime * fps)
+        # on every timeupdate) -- falls back to a sane default if this
+        # particular frame's fps couldn't be resolved, same fallback
+        # trake_playback_dialog uses (ui/app.py:1361) for the same reason.
+        "fps": fps if fps is not None else 25.0,
     }

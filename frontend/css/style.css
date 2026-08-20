@@ -183,7 +183,7 @@ button {
 }
 .thumb-wrap:hover { z-index: 100; }
 .thumb-wrap:hover img {
-    transform: scale(2.5);
+    transform: scale(2.2);
     box-shadow: 0 12px 32px rgba(0,0,0,0.45);
     position: relative;
 }
