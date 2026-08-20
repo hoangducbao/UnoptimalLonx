@@ -22,6 +22,7 @@ export const searchAsr = (body) => postJson("/api/search/asr", body);
 export const searchCaption = (body) => postJson("/api/search/caption", body);
 export const searchOcr = (body) => postJson("/api/search/ocr", body);
 export const searchSummary = (body) => postJson("/api/search/summary", body);
+export const searchMixed = (body) => postJson("/api/search/mixed", body);
 
 export function getNeighbors(videoId, centerN, before, after) {
     const qs = new URLSearchParams({ video_id: videoId, center_n: centerN, before, after });

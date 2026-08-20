@@ -7,7 +7,7 @@ rewrite adds ASR/Caption/OCR/Summary alongside Phase 1's Keyframe --
 Mixed/TRAKE/Hierarchy land in later phases, same module.
 """
 
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -18,6 +18,7 @@ from ..models import is_image_query
 from ..search import asr as asr_mod
 from ..search import caption as cap_mod
 from ..search import keyframe as kf
+from ..search import mixed as mixed_mod
 from ..search import ocr as ocr_mod
 from ..search import summary as sum_mod
 from .query_image import resolve_query
@@ -237,3 +238,49 @@ def search_ocr(body: OcrSearchRequest):
     df = apply_filters(df, body.video_filter, lot_filter)
     results = df_to_results(ocr_mod.attach_keyframe_ocr(df).head(top_k), "score", "text")
     return OcrSearchResponse(fuzzy=LegResult(warning=warning, results=results))
+
+
+# ---------------------------------------------------------------------------
+# Mixed: a user-weighted RRF across Keyframe/ASR/Caption/OCR (ui/app.py:
+# 896-978, 2089-2110). `weights`/`legs` come from the frontend's one shared
+# mixedConfig (state.js) -- the backend stays stateless per request, see
+# the rewrite plan's Decisions section 2.
+# ---------------------------------------------------------------------------
+
+class MixedSearchRequest(BaseModel):
+    query: Optional[str] = None
+    image_id: Optional[str] = None
+    top_k: int = config.DISPLAY_N
+    video_filter: str = ""
+    lot_filter: str = ""
+    weights: Dict[str, int] = {}
+    legs: Dict[str, bool] = {}
+
+
+class MixedSearchResponse(BaseModel):
+    empty: bool = False
+    results: list = []
+
+
+@router.post("/api/search/mixed", response_model=MixedSearchResponse)
+def search_mixed(body: MixedSearchRequest):
+    query = resolve_query(body.query, body.image_id)
+    top_k = body.top_k
+    fetch_k = max(config.FETCH_K, top_k)
+    lot_filter = parse_lot_range(body.lot_filter)
+
+    signal_dfs = {}
+    if body.weights.get("Keyframe", 0):
+        signal_dfs["Keyframe"] = mixed_mod._mixed_keyframe_df(query, fetch_k, body.video_filter, lot_filter, body.legs)
+    if body.weights.get("ASR", 0):
+        signal_dfs["ASR"] = mixed_mod._mixed_asr_df(query, fetch_k, body.video_filter, lot_filter, body.legs)
+    if body.weights.get("Caption", 0):
+        signal_dfs["Caption"] = mixed_mod._mixed_caption_df(query, fetch_k, body.video_filter, lot_filter, body.legs)
+    if body.weights.get("OCR", 0):
+        signal_dfs["OCR"] = mixed_mod._mixed_ocr_df(query, fetch_k, body.video_filter, lot_filter)
+
+    if not signal_dfs:
+        return MixedSearchResponse(empty=True)
+
+    fused = mixed_mod.rrf_fuse_weighted(signal_dfs, body.weights, top_n=top_k)
+    return MixedSearchResponse(results=df_to_results(fused, "rrf_score"))

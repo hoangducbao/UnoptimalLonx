@@ -11,6 +11,7 @@ import * as asr from "./signals/asr.js";
 import * as caption from "./signals/caption.js";
 import * as ocr from "./signals/ocr.js";
 import * as summary from "./signals/summary.js";
+import * as mixed from "./signals/mixed.js";
 
 const SIGNALS = {
     Keyframe: keyframe,
@@ -18,6 +19,7 @@ const SIGNALS = {
     Caption: caption,
     OCR: ocr,
     Summary: summary,
+    Mixed: mixed,
 };
 
 const resultsEl = document.getElementById("results");

@@ -11,6 +11,51 @@ export const state = {
     neighborExtra: new Map(), // key `${videoId}_${centerN}` -> {before, after}
 };
 
+// ---------------------------------------------------------------------------
+// Mixed mode config -- ui/app.py:1252-1267. ONE shared config, read/written
+// from standalone Mixed mode AND every TRAKE row set to "Mixed" (a later
+// phase) -- same single-global-dict coupling as the original, see the
+// rewrite plan's Decisions section 2. Persisted to localStorage: a small
+// superset of ui/app.py's per-session behavior (survives reloads too),
+// not a limitation.
+// ---------------------------------------------------------------------------
+
+export const MIXED_SIGNAL_NAMES = ["Keyframe", "ASR", "Caption", "OCR"];
+export const MIXED_LEG_DEFS = {
+    Keyframe: [["kf_siglip2", "SigLIP2"], ["kf_clip", "CLIP"]],
+    ASR: [["asr_siglip", "SigLIP2 ASR"], ["asr_fuzzy", "Fuzzy ASR"]],
+    Caption: [["cap_siglip", "SigLIP2 Caption"], ["cap_fuzzy", "Fuzzy Caption"]],
+    // OCR intentionally omitted -- single fuzzy-only leg, nothing to choose.
+};
+export const MIXED_DEFAULT_WEIGHTS = Object.fromEntries(MIXED_SIGNAL_NAMES.map((n) => [n, 1]));
+export const MIXED_DEFAULT_LEGS = {
+    kf_siglip2: true, kf_clip: true,
+    asr_siglip: false, asr_fuzzy: true,
+    cap_siglip: false, cap_fuzzy: true,
+};
+
+const MIXED_STORAGE_KEY = "routing101_mixed_config";
+
+function loadMixedConfig() {
+    try {
+        const raw = localStorage.getItem(MIXED_STORAGE_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            return {
+                weights: { ...MIXED_DEFAULT_WEIGHTS, ...parsed.weights },
+                legs: { ...MIXED_DEFAULT_LEGS, ...parsed.legs },
+            };
+        }
+    } catch (e) { /* corrupt/old value -- fall through to defaults */ }
+    return { weights: { ...MIXED_DEFAULT_WEIGHTS }, legs: { ...MIXED_DEFAULT_LEGS } };
+}
+
+export const mixedConfig = loadMixedConfig();
+
+export function saveMixedConfig() {
+    localStorage.setItem(MIXED_STORAGE_KEY, JSON.stringify(mixedConfig));
+}
+
 export function getNeighborExtra(videoId, centerN) {
     const key = `${videoId}_${centerN}`;
     if (!state.neighborExtra.has(key)) {
