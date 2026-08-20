@@ -9,13 +9,19 @@ async function jsonFetch(url, options) {
     return res.json();
 }
 
-export function searchKeyframe(body) {
-    return jsonFetch("/api/search/keyframe", {
+function postJson(url, body) {
+    return jsonFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
     });
 }
+
+export const searchKeyframe = (body) => postJson("/api/search/keyframe", body);
+export const searchAsr = (body) => postJson("/api/search/asr", body);
+export const searchCaption = (body) => postJson("/api/search/caption", body);
+export const searchOcr = (body) => postJson("/api/search/ocr", body);
+export const searchSummary = (body) => postJson("/api/search/summary", body);
 
 export function getNeighbors(videoId, centerN, before, after) {
     const qs = new URLSearchParams({ video_id: videoId, center_n: centerN, before, after });

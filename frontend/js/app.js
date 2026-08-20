@@ -7,9 +7,17 @@
 import { state } from "./state.js";
 import { setOnSubmit } from "./query-input.js";
 import * as keyframe from "./signals/keyframe.js";
+import * as asr from "./signals/asr.js";
+import * as caption from "./signals/caption.js";
+import * as ocr from "./signals/ocr.js";
+import * as summary from "./signals/summary.js";
 
 const SIGNALS = {
     Keyframe: keyframe,
+    ASR: asr,
+    Caption: caption,
+    OCR: ocr,
+    Summary: summary,
 };
 
 const resultsEl = document.getElementById("results");
@@ -27,6 +35,8 @@ function runCurrentSearch() {
 
 function selectSignal(name) {
     if (!SIGNALS[name]) return; // not wired up yet (later phase)
+    const prevMod = currentModule();
+    if (prevMod?.unmount) prevMod.unmount();
     state.signal = name;
     document.querySelectorAll(".signal-btn").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.signal === name);

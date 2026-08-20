@@ -16,28 +16,40 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import config
+from .es_indexing import ensure_all_fuzzy_indices
 from .models import DEVICE, load_siglip2
 from .routes import neighbors, playback, query_image, search
+from .search import asr as asr_mod
+from .search import caption as cap_mod
 from .search import keyframe as kf
+from .search import summary as sum_mod
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Eager build, once, before the first request is served -- direct
     # replacement for ui/app.py's `with st.status("Loading signals…")`
-    # block (ui/app.py:1579-1595). Only Keyframe is wired up in this phase;
-    # later phases add ASR/Caption/OCR/Summary index builds + ES indexing
-    # here too, same pattern.
+    # block (ui/app.py:1579-1595).
     config.tune_thread_pools(DEVICE)
     print(f"[startup] device={DEVICE} cpu_budget={config.CPU_BUDGET}")
 
     print("[startup] loading SigLIP2 text/image tower…")
     load_siglip2()
 
-    print("[startup] building Keyframe SigLIP2 frame index…")
+    print("[startup] Keyframe — SigLIP2 frame index")
     kf.build_frame_index(config.FRAME_SIGLIP2_GLOB)
-    print("[startup] building Keyframe CLIP frame index…")
+    print("[startup] Keyframe — CLIP frame index")
     kf.build_frame_index(config.FRAME_CLIP_GLOB)
+
+    print("[startup] ASR — SigLIP2 index")
+    asr_mod.build_siglip_asr_index()
+    print("[startup] Caption — SigLIP2 index")
+    cap_mod.build_siglip_caption_index()
+    print("[startup] Summary — embeddings + SigLIP2 index")
+    sum_mod.build_siglip_summary_index()
+
+    print("[startup] ASR/Caption/OCR/Summary — Elasticsearch")
+    ensure_all_fuzzy_indices()
 
     print("[startup] all signals ready")
     yield
