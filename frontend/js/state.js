@@ -56,6 +56,22 @@ export function saveMixedConfig() {
     localStorage.setItem(MIXED_STORAGE_KEY, JSON.stringify(mixedConfig));
 }
 
+// ---------------------------------------------------------------------------
+// TRAKE state -- ui/app.py:1810-1812 (trake_context/trake_events/trake_next_id).
+// Signal choices offered per event row: every signal except TRAKE itself
+// (nested TRAKE makes no sense) and Hierarchy (a grouped/drilled-down
+// result set, not the single ranked frame list TRAKE expects per event) --
+// ui/app.py:1615.
+// ---------------------------------------------------------------------------
+
+export const TRAKE_EVENT_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR", "Summary", "Mixed"];
+
+export const trakeState = {
+    context: { text: "", signal: "Summary" },
+    events: [{ id: 0, text: "", signal: "Keyframe" }],
+    nextId: 1,
+};
+
 export function getNeighborExtra(videoId, centerN) {
     const key = `${videoId}_${centerN}`;
     if (!state.neighborExtra.has(key)) {

@@ -187,3 +187,78 @@ export function openWeightsDialog(onSave) {
         if (onSave) onSave();
     };
 }
+
+// TRAKE's play-icon action: opens the source video seeked near the first
+// matched event, with a click-to-seek marker row for every matched event
+// and a live timestamp/frame readout. Ports trake_playback_dialog +
+// render_trake_playback_binder's JS (ui/app.py:1379-1492) -- collapsed
+// into one function here since a hand-written page has no
+// "st.dialog can't run <script>" limitation to work around, and no
+// rerun-driven observer/singleton-guard dance needed either.
+export async function openTrakePlaybackDialog(videoId, events) {
+    const matched = events.filter((e) => e.matched && e.timestamp !== null);
+    const gaps = events.filter((e) => !e.matched);
+
+    const body = document.createElement("div");
+    body.innerHTML = `<div class="thumb-caption" style="margin-bottom:0.5rem;">${videoId}</div>
+        <div id="trake-video-wrap">Loading…</div>
+        <div id="trake-marker-bar"></div>
+        <div id="trake-timer">--:-- · frame --</div>
+        <div id="trake-gaps"></div>`;
+    const { box } = openDialog("Video playback", body, { wide: true });
+
+    if (gaps.length) {
+        const gapsEl = box.querySelector("#trake-gaps");
+        gapsEl.innerHTML = `<hr class="divider"><div class="thumb-caption muted" style="margin-bottom:0.4rem;">Coverage gaps — scrub manually between the nearest matched anchors:</div>`;
+        for (const e of gaps) {
+            const before = matched.filter((m) => m.event_index < e.event_index).at(-1);
+            const after = matched.find((m) => m.event_index > e.event_index);
+            const lo = before ? `${before.timestamp.toFixed(2)}s (${before.label})` : "start";
+            const hi = after ? `${after.timestamp.toFixed(2)}s (${after.label})` : "end";
+            const line = document.createElement("div");
+            line.className = "thumb-caption";
+            line.innerHTML = `${e.label}: no direct match — between <b>${lo}</b> and <b>${hi}</b>`;
+            gapsEl.append(line);
+        }
+    }
+
+    if (!matched.length) {
+        box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner info">No matched events to seek to.</div>`;
+        return;
+    }
+
+    try {
+        const data = await getPlayback(videoId, matched[0].n);
+        const wrap = box.querySelector("#trake-video-wrap");
+        wrap.innerHTML = "";
+        const video = document.createElement("video");
+        video.src = data.video_url + `#t=${matched[0].timestamp}`;
+        video.controls = true;
+        wrap.append(video);
+
+        const bar = box.querySelector("#trake-marker-bar");
+        const timer = box.querySelector("#trake-timer");
+
+        function layoutMarkers() {
+            if (!video.duration || !isFinite(video.duration)) return;
+            bar.innerHTML = "";
+            for (const m of matched) {
+                const pct = Math.max(0, Math.min(100, (m.timestamp / video.duration) * 100));
+                const tick = document.createElement("div");
+                tick.className = "trake-marker-tick";
+                tick.title = `${m.label} @ ${m.timestamp.toFixed(2)}s`;
+                tick.textContent = m.label;
+                tick.style.left = pct + "%";
+                tick.addEventListener("click", () => { video.currentTime = m.timestamp; });
+                bar.append(tick);
+            }
+        }
+        video.addEventListener("loadedmetadata", layoutMarkers);
+        if (video.readyState >= 1) layoutMarkers();
+        video.addEventListener("timeupdate", () => {
+            timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
+        });
+    } catch (e) {
+        box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner error">${e.message}</div>`;
+    }
+}

@@ -21,17 +21,21 @@
     </div>
     <div class="signal-row">
       <button class="signal-btn" data-signal="Mixed" title="Mixed">🔀</button>
-      <button class="signal-btn" data-signal="TRAKE" title="TRAKE" disabled>🧭</button>
+      <button class="signal-btn" data-signal="TRAKE" title="TRAKE">🧭</button>
       <button class="signal-btn" data-signal="Hierarchy" title="Hierarchy" disabled>🌳</button>
     </div>
 
-    <label for="query-text">Query</label>
-    <textarea id="query-text" placeholder="e.g. một người đàn ông đang lái xe máy (or paste an image)"></textarea>
+    <div id="standard-query-section">
+      <label for="query-text">Query</label>
+      <textarea id="query-text" placeholder="e.g. một người đàn ông đang lái xe máy (or paste an image)"></textarea>
 
-    <div class="image-query-preview" id="image-query-preview" style="display:none;">
-      <img id="image-query-thumb" alt="pasted query image">
-      <button class="btn" id="clear-image-query">Clear</button>
+      <div class="image-query-preview" id="image-query-preview" style="display:none;">
+        <img id="image-query-thumb" alt="pasted query image">
+        <button class="btn" id="clear-image-query">Clear</button>
+      </div>
     </div>
+
+    <div id="trake-query-section" style="display:none;"></div>
 
     <div class="scope-row">
       <div>
@@ -52,10 +56,18 @@
       </div>
     </div>
 
-    <label for="top-k">Top-K</label>
-    <input type="number" id="top-k" value="30" min="1" max="200" step="5">
+    <div class="scope-row">
+      <div>
+        <label for="top-k">Top-K</label>
+        <input type="number" id="top-k" value="30" min="1" max="200" step="5">
+      </div>
+      <div id="top-v-wrap" style="display:none;">
+        <label for="top-v">Top-V</label>
+        <input type="number" id="top-v" value="10" min="1" max="50" step="1">
+      </div>
+    </div>
 
-    <div class="checkbox-row">
+    <div class="checkbox-row" id="group-by-row">
       <input type="checkbox" id="group-by-video">
       <label for="group-by-video" style="margin:0;">Group by video</label>
     </div>
