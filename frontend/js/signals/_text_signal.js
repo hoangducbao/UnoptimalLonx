@@ -1,26 +1,25 @@
 // frontend/js/signals/_text_signal.js -- ASR/Caption/Summary share one
 // shape (SigLIP2 leg + fuzzy leg + RRF, ui/app.py:2000-2050, 2063-2087),
-// differing only in labels, the API call, and (Summary) group-by-collection
-// instead of group-by-video. This factory avoids repeating that shape
-// three times; OCR is the one-leg exception and gets its own file.
+// differing only in labels, the API call, (Summary) group-by-collection
+// instead of group-by-video, and (per-instance) checkbox order/defaults.
+// This factory avoids repeating that shape three times; OCR is the
+// one-leg exception and gets its own file.
 
 import { renderGrid } from "../render.js";
 import { currentQuery } from "../query-input.js";
 
-export function makeTextSignalPanel({ prefix, siglipLabel, fuzzyLabel, rrfLabel, searchFn, groupMode }) {
-    const controlsHtml = `
+const LEG_KEYS = ["siglip", "fuzzy", "rrf"];
+
+export function makeTextSignalPanel({
+    prefix, siglipLabel, fuzzyLabel, rrfLabel, searchFn, groupMode,
+    order = LEG_KEYS, defaults = { siglip: true, fuzzy: true, rrf: true },
+}) {
+    const labels = { siglip: siglipLabel, fuzzy: fuzzyLabel, rrf: rrfLabel };
+    const controlsHtml = order.map((key) => `
     <div class="checkbox-row">
-      <input type="checkbox" id="${prefix}-use-siglip" checked>
-      <label for="${prefix}-use-siglip" style="margin:0;">${siglipLabel}</label>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" id="${prefix}-use-fuzzy" checked>
-      <label for="${prefix}-use-fuzzy" style="margin:0;">${fuzzyLabel}</label>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" id="${prefix}-use-rrf" checked>
-      <label for="${prefix}-use-rrf" style="margin:0;">${rrfLabel}</label>
-    </div>`;
+      <input type="checkbox" id="${prefix}-use-${key}"${defaults[key] ? " checked" : ""}>
+      <label for="${prefix}-use-${key}" style="margin:0;">${labels[key]}</label>
+    </div>`).join("");
 
     function mount(controlsEl) {
         controlsEl.innerHTML = controlsHtml;
@@ -55,10 +54,8 @@ export function makeTextSignalPanel({ prefix, siglipLabel, fuzzyLabel, rrfLabel,
         }
         statusEl.innerHTML = "";
 
-        const useSiglip = document.getElementById(`${prefix}-use-siglip`).checked;
-        const useFuzzy = document.getElementById(`${prefix}-use-fuzzy`).checked;
-        const useRrf = document.getElementById(`${prefix}-use-rrf`).checked;
-        if (!useSiglip && !useFuzzy && !useRrf) {
+        const use = Object.fromEntries(LEG_KEYS.map((key) => [key, document.getElementById(`${prefix}-use-${key}`).checked]));
+        if (!use.siglip && !use.fuzzy && !use.rrf) {
             resultsEl.innerHTML = `<div class="status-banner info">Check at least one search option in the sidebar.</div>`;
             return;
         }
@@ -72,7 +69,7 @@ export function makeTextSignalPanel({ prefix, siglipLabel, fuzzyLabel, rrfLabel,
                 ? document.getElementById("video-filter").value : "",
             lot_filter: document.getElementById("use-collection-scope").checked
                 ? document.getElementById("lot-filter").value : "",
-            legs: { siglip: useSiglip, fuzzy: useFuzzy, rrf: useRrf },
+            legs: { siglip: use.siglip, fuzzy: use.fuzzy, rrf: use.rrf },
         };
 
         resultsEl.innerHTML = `<div class="status-banner info">Searching…</div>`;
@@ -85,9 +82,10 @@ export function makeTextSignalPanel({ prefix, siglipLabel, fuzzyLabel, rrfLabel,
         }
         resultsEl.innerHTML = "";
 
-        if (useSiglip) section(resultsEl, siglipLabel, data.siglip);
-        if (useFuzzy) section(resultsEl, fuzzyLabel, data.fuzzy);
-        if (useRrf) section(resultsEl, rrfLabel, data.rrf);
+        const dataKey = { siglip: "siglip", fuzzy: "fuzzy", rrf: "rrf" };
+        for (const key of order) {
+            if (use[key]) section(resultsEl, labels[key], data[dataKey[key]]);
+        }
     }
 
     return { mount, run };
