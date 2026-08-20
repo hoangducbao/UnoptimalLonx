@@ -25,3 +25,11 @@ multilingual-clip==1.0.10
 # ASR / Caption fuzzy legs (ui/app.py) -- bulk-indexes transcript/caption
 # text into a local Elasticsearch and runs a fuzzy match query against it.
 elasticsearch>=8.0.0
+
+# backend/ -- FastAPI rewrite of ui/app.py (see backend/main.py). streamlit
+# above stays too: ui/app.py is kept as a reference/fallback implementation,
+# see the rewrite plan's Decisions section 3.
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+cachetools>=5.3
