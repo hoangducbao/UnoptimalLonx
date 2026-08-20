@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Multi-signal text-to-keyframe retrieval over the AIC video corpus (873
-videos / ~177k keyframes). Six searchable signals, each embedded/file-based
+videos / ~177k keyframes). Seven searchable signals, each embedded/file-based
 (FAISS flat indices) except the fuzzy-text legs which use a local
 Elasticsearch:
 
@@ -17,6 +17,16 @@ Elasticsearch:
 | OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |
 | Summary | SigLIP2-summary, Elasticsearch fuzzy, RRF | video-level: one result per video, "group by" groups by collection (lot) instead of by video |
 | Mixed | weighted RRF across Keyframe/ASR/Caption/OCR | per-signal on/off leg toggles + adjustable weights, dialog-driven |
+| Hierarchy | SigLIP2 only | 3 steps: (1) SigLIP2 frame search grouped by video, (2) per-video seed-frame picker (defaults to that group's top-1 frame), (3) drill-down using the chosen seed as a new picture query scoped to that video, pulling in results up to Top-G frames/video (default 5, "Expand" bumps one video's own G by +10) |
+
+The query box (outside TRAKE) also accepts a **picture query**: paste an
+image into it and it's embedded with each leg's SigLIP2 *image* tower
+instead of its text tower, then searched the same way. Picture queries are
+SigLIP2-only — CLIP ViT-B/32 and every Elasticsearch fuzzy leg have no
+image counterpart and are skipped (OCR, being fuzzy-only, is unavailable
+for a picture query entirely), and intra-signal RRF is skipped too since a
+picture query only ever has one active leg. See `is_image_query()` /
+`siglip2_query_vec()` in `ui/app.py`.
 
 Everything runs as **one** Streamlit process (`streamlit run ui/app.py`).
 Do not resurrect the old per-layer app scripts as separate processes — text
@@ -39,6 +49,7 @@ docker run -d --name es -p 9200:9200 \
     -e "xpack.security.enabled=false" \
     -e "xpack.ml.enabled=false" \
     -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" \
+    -v es-data:/usr/share/elasticsearch/data \
     docker.elastic.co/elasticsearch/elasticsearch:8.15.0
 ```
 
@@ -47,6 +58,17 @@ visible RAM (up to 26 GB), which is wildly oversized for the short-text-only
 indices this app builds (no vectors — those live in FAISS). Uncapped, the
 container was observed using ~8.6 GB RAM for a corpus of ~300k short text
 rows; capped at 512m it should stay well under 1 GB.
+
+The `-v es-data:...` volume mount matters too: without it, the container's
+`/usr/share/elasticsearch/data` is ephemeral, so every `docker rm`/recreate
+loses all four fuzzy indices and the next launch has to re-bulk everything
+from CSV. With the volume, indices persist across container restarts *and*
+recreation, and each `ensure_*_fuzzy_index()` in `ui/app.py` checks
+`es.indices.exists(...)` up front and returns immediately if the index is
+already there — so re-indexing only ever happens once, the first time an
+index doesn't exist yet, not on every Streamlit launch. To force a rebuild
+after changing the indexed source data, delete that one index (e.g. `curl
+-X DELETE localhost:9200/asr_segments`) rather than the whole container/volume.
 
 No test suite, linter, or build step exists in this repo. `pipeline/clip_encoder.py`
 has a `__main__` smoke test: `python pipeline/clip_encoder.py "some query"`.
@@ -95,8 +117,11 @@ Update these constants, not a config file, if the data moves.
   to `{video_id, n, rank, score_label, score_val, text}` (`n` = 1-indexed
   keyframe number from `map-keyframes`) before rendering. One `render_grid()`
   and one "show more" neighbor popup (`show_neighbors`, ± `NEIGHBOR_WINDOW`
-  frames by frame number) serve all six signals — keep new signals
-  conforming to this shape rather than adding bespoke rendering.
+  frames by frame number) serve most signals — keep new signals conforming
+  to this shape rather than adding bespoke rendering. Hierarchy is the one
+  exception: its per-video drill-down groups aren't a plain ranked
+  DataFrame, so it renders its own grid directly (still built from the same
+  per-result dicts `df_to_results()` produces).
 - **RRF fusion**: each signal has its own `rrf_fuse_*` (frame/asr/caption/
   summary) that fuses same-signal legs; `rrf_fuse_weighted` is separate —
   it fuses *across* signals for Mixed mode using per-signal weights (see

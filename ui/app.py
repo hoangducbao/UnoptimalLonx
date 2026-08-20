@@ -33,10 +33,20 @@ is always the 1-indexed keyframe number on disk (map-keyframes.n) -- so
 one render_grid() and one "show more" neighbor popup serve all five
 modes. The CLIP ViT-B/32 leg is Keyframe-only (dropped from the other
 embedding legs per the current scope -- SigLIP2 + fuzzy + RRF only there).
+
+Query input isn't limited to text: pasting an image directly into the
+query box (outside TRAKE) runs a picture query instead -- SigLIP2-only
+(every SigLIP2-embedded leg: frame/ASR/caption/summary), embedded with its
+image tower instead of its text tower and searched the same way. The CLIP
+ViT-B/32 leg (Keyframe only) and every fuzzy (Elasticsearch) leg have no
+image counterpart, so they contribute nothing to a picture query, and OCR
+(fuzzy-only) is unavailable for one entirely.
 """
 
 import base64
+import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -46,6 +56,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import torch
+from PIL import Image
 
 st.set_page_config(page_title="Routing101 by MiLF", layout="wide")
 
@@ -64,6 +75,7 @@ FETCH_K = 100      # candidates pulled per leg, gives RRF a real pool to fuse
 DISPLAY_N = 30
 RRF_K = 60
 NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id
+TOP_G_DEFAULT = 5   # Hierarchy Search: frames kept per video after drill-down (Top-G)
 
 SIGLIP2_MODEL_ID = "google/siglip2-base-patch16-384"
 
@@ -107,6 +119,48 @@ ES_INDEX_OCR = "ocr_frames"
 ES_INDEX_SUMMARY = "summary_videos"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Thread-pool tuning -- CPU-only torch defaults to num-cores intraop threads
+# AND num-cores interop threads (the latter unused here: this app never runs
+# independent torch op graphs in parallel, just one encode call at a time),
+# and FAISS's own OpenMP pool defaults to num-cores on top of that. Left
+# uncapped, the pools compound into far more live threads than the box has
+# cores (observed: 130 threads on a 22-logical-core machine), adding
+# context-switch overhead on top of an already CPU-bound SigLIP2 +
+# Multilingual-CLIP (XLM-RoBERTa-Large) encode per query. Streamlit re-execs
+# this whole script on every rerun, so torch.set_num_interop_threads (unlike
+# set_num_threads/omp_set_num_threads) can only legally be called once per
+# process -- guard it, or the second rerun raises.
+_CPU_BUDGET = max(1, (os.cpu_count() or 4) - 2)  # leave headroom for Streamlit/tornado/OS
+
+
+@st.cache_resource(show_spinner=False)
+def _tune_thread_pools():
+    """Runs exactly once per process (st.cache_resource, not a bare
+    module-level call) -- app.py's top-level code re-execs on EVERY
+    Streamlit rerun, and re-resizing torch's intraop pool (or faiss's OpenMP
+    pool) on every rerun risked racing an in-flight encode/search call from
+    a rerun still winding down, which was observed to wedge the whole
+    session (script "running" indicator stuck, near-zero CPU, no results --
+    not just slow). set_num_interop_threads is even stricter: it's only
+    legal to call once per process at all, ever."""
+    if DEVICE == "cpu":
+        torch.set_num_threads(_CPU_BUDGET)
+    torch.set_num_interop_threads(1)
+    faiss.omp_set_num_threads(_CPU_BUDGET)
+    return True
+
+
+_tune_thread_pools()
+
+# Every search_* function below is st.cache_data'd on (query, k) -- Streamlit
+# reruns the ENTIRE script on any widget interaction (a "Show more"/"Copy"
+# button included), and without this every one of those clicks was silently
+# re-running the full embed-plus-FAISS-or-ES search for whatever signal was
+# on screen, not just an actual new query. hash_funcs is needed because a
+# picture query's `query` argument is a PIL.Image, which Streamlit's default
+# hasher doesn't know how to fingerprint -- hash it by raw pixel bytes.
+_QUERY_HASH_FUNCS = {Image.Image: lambda img: img.tobytes()}
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +300,33 @@ def encode_text_siglip2(texts: list) -> np.ndarray:
     return feats.float().cpu().numpy().astype("float32")
 
 
+def encode_image_siglip2(images: list) -> np.ndarray:
+    """SigLIP2 image tower -- same joint text/image embedding space as
+    encode_text_siglip2(), so an image query is directly comparable to
+    every SigLIP2-embedded leg (frame, ASR, caption, summary), not just
+    the frame index."""
+    model, processor = load_siglip2()
+    inputs = processor(images=images, return_tensors="pt").to(DEVICE)
+    with torch.no_grad():
+        out = model.get_image_features(**inputs)
+    feats = out.pooler_output if hasattr(out, "pooler_output") else out
+    return feats.float().cpu().numpy().astype("float32")
+
+
+def is_image_query(query) -> bool:
+    return isinstance(query, Image.Image)
+
+
+def siglip2_query_vec(query) -> np.ndarray:
+    """Picture-query support: a pasted image is embedded with the SigLIP2
+    image tower instead of the text tower -- everywhere else the caller
+    already treats the result as a plain query vector, so this is the only
+    branch point needed for every SigLIP2-backed leg."""
+    if is_image_query(query):
+        return encode_image_siglip2([query])[0]
+    return encode_text_siglip2([query])[0]
+
+
 @st.cache_resource(show_spinner=False)
 def get_es_client():
     from elasticsearch import Elasticsearch
@@ -293,13 +374,20 @@ def _search_frame(index, lookup_df, qvec: np.ndarray, k: int) -> pd.DataFrame:
     return results[["rank", "score", "video_id", "frame_id", "n"]]
 
 
-def search_siglip2_frame(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS)
+def search_siglip2_frame(query, k: int = FETCH_K) -> pd.DataFrame:
     index, lookup_df = build_frame_index(FRAME_SIGLIP2_GLOB)
-    qvec = encode_text_siglip2([query])[0]
+    qvec = siglip2_query_vec(query)
     return _search_frame(index, lookup_df, qvec, k)
 
 
-def search_clip_frame(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS)
+def search_clip_frame(query, k: int = FETCH_K) -> pd.DataFrame:
+    if is_image_query(query):
+        # Picture queries are SigLIP2-only -- CLIP ViT-B/32 here is the
+        # Multilingual-CLIP *text* tower's paired space, no image tower
+        # wired up for it, so this leg contributes nothing to an image query.
+        return pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "n"])
     index, lookup_df = build_frame_index(FRAME_CLIP_GLOB)
     qvec = clip_encoder.encode_text([query])[0]
     return _search_frame(index, lookup_df, qvec, k)
@@ -357,9 +445,10 @@ def build_siglip_asr_index():
     return faiss.read_index(str(SIGLIP_ASR_FAISS)), pd.read_csv(SIGLIP_ASR_META)
 
 
-def search_siglip_asr(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS)
+def search_siglip_asr(query, k: int = FETCH_K) -> pd.DataFrame:
     index, meta = build_siglip_asr_index()
-    qvec = l2_normalize(encode_text_siglip2([query]))
+    qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
     n = min(k, index.ntotal)
     scores, ids = index.search(qvec, n)
     rows = []
@@ -378,13 +467,14 @@ def ensure_asr_fuzzy_index():
     from elasticsearch import helpers
 
     es = get_es_client()
-    if not es.indices.exists(index=ES_INDEX_ASR):
-        es.indices.create(index=ES_INDEX_ASR, mappings={"properties": {
-            "video_id": {"type": "keyword"},
-            "segment_id": {"type": "integer"},
-            "start_sec": {"type": "float"},
-            "text": {"type": "text"},
-        }})
+    if es.indices.exists(index=ES_INDEX_ASR):
+        return True  # already indexed (persists across restarts if ES's data dir is a volume) -- skip re-bulking every launch
+    es.indices.create(index=ES_INDEX_ASR, mappings={"properties": {
+        "video_id": {"type": "keyword"},
+        "segment_id": {"type": "integer"},
+        "start_sec": {"type": "float"},
+        "text": {"type": "text"},
+    }})
 
     def _docs():
         for csv_path in sorted(TRANSCRIPTS_DIR.glob("*.csv")):
@@ -404,8 +494,11 @@ def ensure_asr_fuzzy_index():
     return True
 
 
-def search_asr_fuzzy(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS, ttl=300)
+def search_asr_fuzzy(query, k: int = FETCH_K) -> pd.DataFrame:
     empty = pd.DataFrame(columns=["rank", "score", "video_id", "segment_id", "start_sec", "text"])
+    if is_image_query(query):
+        return empty  # fuzzy legs need text; picture queries skip them
     try:
         ensure_asr_fuzzy_index()
         es = get_es_client()
@@ -494,9 +587,10 @@ def build_siglip_caption_index():
     return faiss.read_index(str(SIGLIP_CAPTION_FAISS)), pd.read_csv(SIGLIP_CAPTION_META)
 
 
-def search_siglip_caption(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS)
+def search_siglip_caption(query, k: int = FETCH_K) -> pd.DataFrame:
     index, meta = build_siglip_caption_index()
-    qvec = l2_normalize(encode_text_siglip2([query]))
+    qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
     n = min(k, index.ntotal)
     scores, ids = index.search(qvec, n)
     rows = []
@@ -514,12 +608,13 @@ def ensure_caption_fuzzy_index():
     from elasticsearch import helpers
 
     es = get_es_client()
-    if not es.indices.exists(index=ES_INDEX_CAPTION):
-        es.indices.create(index=ES_INDEX_CAPTION, mappings={"properties": {
-            "video_id": {"type": "keyword"},
-            "frame_id": {"type": "integer"},
-            "text": {"type": "text"},
-        }})
+    if es.indices.exists(index=ES_INDEX_CAPTION):
+        return True  # already indexed -- skip re-bulking every launch
+    es.indices.create(index=ES_INDEX_CAPTION, mappings={"properties": {
+        "video_id": {"type": "keyword"},
+        "frame_id": {"type": "integer"},
+        "text": {"type": "text"},
+    }})
 
     def _docs():
         for csv_path in sorted(CAPTIONING_DIR.glob("*_captions.csv")):
@@ -535,8 +630,11 @@ def ensure_caption_fuzzy_index():
     return True
 
 
-def search_caption_fuzzy(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS, ttl=300)
+def search_caption_fuzzy(query, k: int = FETCH_K) -> pd.DataFrame:
     empty = pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "text"])
+    if is_image_query(query):
+        return empty  # fuzzy legs need text; picture queries skip them
     try:
         ensure_caption_fuzzy_index()
         es = get_es_client()
@@ -595,12 +693,13 @@ def ensure_ocr_fuzzy_index():
     from elasticsearch import helpers
 
     es = get_es_client()
-    if not es.indices.exists(index=ES_INDEX_OCR):
-        es.indices.create(index=ES_INDEX_OCR, mappings={"properties": {
-            "video_id": {"type": "keyword"},
-            "frame_id": {"type": "integer"},
-            "text": {"type": "text"},
-        }})
+    if es.indices.exists(index=ES_INDEX_OCR):
+        return True  # already indexed -- skip re-bulking every launch
+    es.indices.create(index=ES_INDEX_OCR, mappings={"properties": {
+        "video_id": {"type": "keyword"},
+        "frame_id": {"type": "integer"},
+        "text": {"type": "text"},
+    }})
 
     def _docs():
         for csv_path in sorted(OCR_DIR.glob("*.csv")):
@@ -626,8 +725,11 @@ def ensure_ocr_fuzzy_index():
     return True
 
 
-def search_ocr_fuzzy(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS, ttl=300)
+def search_ocr_fuzzy(query, k: int = FETCH_K) -> pd.DataFrame:
     empty = pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "text"])
+    if is_image_query(query):
+        return empty  # OCR is fuzzy-text-only; picture queries have no leg here
     try:
         ensure_ocr_fuzzy_index()
         es = get_es_client()
@@ -703,9 +805,10 @@ def build_siglip_summary_index():
     return faiss.read_index(str(SIGLIP_SUMMARY_FAISS)), pd.read_csv(SIGLIP_SUMMARY_META)
 
 
-def search_siglip_summary(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS)
+def search_siglip_summary(query, k: int = FETCH_K) -> pd.DataFrame:
     index, meta = build_siglip_summary_index()
-    qvec = l2_normalize(encode_text_siglip2([query]))
+    qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
     n = min(k, index.ntotal)
     scores, ids = index.search(qvec, n)
     rows = []
@@ -722,11 +825,12 @@ def ensure_summary_fuzzy_index():
     from elasticsearch import helpers
 
     es = get_es_client()
-    if not es.indices.exists(index=ES_INDEX_SUMMARY):
-        es.indices.create(index=ES_INDEX_SUMMARY, mappings={"properties": {
-            "video_id": {"type": "keyword"},
-            "text": {"type": "text"},
-        }})
+    if es.indices.exists(index=ES_INDEX_SUMMARY):
+        return True  # already indexed -- skip re-bulking every launch
+    es.indices.create(index=ES_INDEX_SUMMARY, mappings={"properties": {
+        "video_id": {"type": "keyword"},
+        "text": {"type": "text"},
+    }})
 
     def _docs():
         for txt_path in sorted(SUMMARY_DIR.glob("*.txt")):
@@ -740,8 +844,11 @@ def ensure_summary_fuzzy_index():
     return True
 
 
-def search_summary_fuzzy(query: str, k: int = FETCH_K) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs=_QUERY_HASH_FUNCS, ttl=300)
+def search_summary_fuzzy(query, k: int = FETCH_K) -> pd.DataFrame:
     empty = pd.DataFrame(columns=["rank", "score", "video_id", "text"])
+    if is_image_query(query):
+        return empty  # fuzzy legs need text; picture queries skip them
     try:
         ensure_summary_fuzzy_index()
         es = get_es_client()
@@ -1007,6 +1114,72 @@ def trake_rank_videos(event_dfs: list, labels: list, top_n: int,
 
 
 # ---------------------------------------------------------------------------
+# Mode 8 — Hierarchy Search, three steps:
+#   1. A SigLIP2 frame search (text or picture query), grouped by video like
+#      Keyframe's "group by video".
+#   2. Per video, a seed-frame picker -- which of that group's own frames
+#      becomes the NEW picture query for step 3. Defaults to the group's
+#      top-1 frame; changing it only affects that one video.
+#   3. Drill-down: the chosen seed frame is embedded and searched scoped to
+#      that one video, pulling in up to Top-G frames total per video
+#      (default G=5, "Expand" bumps one video's own G by +10).
+# This only ever uses the SigLIP2 frame leg -- CLIP/fuzzy legs have no
+# picture-query counterpart (see is_image_query()), and the drill-down step
+# is a picture query by construction (the seed is a frame's own thumbnail),
+# so there's no meaningful text/RRF path to offer here at all.
+# ---------------------------------------------------------------------------
+
+def hierarchy_expand_group(video_id: str, frames: list, top_g: int, fetch_k: int, seed_n: int = None) -> list:
+    """`frames` is one video's results from the base search (Step 1),
+    already in rank order (best first). If it's already at/over Top-G, just
+    truncate. Otherwise, embed a seed frame's thumbnail as a new SigLIP2
+    picture query, search scoped to this video only, and append
+    not-yet-present frames (in that scoped search's own rank order) until
+    Top-G is hit or the scoped search runs out of candidates.
+
+    `seed_n` (Step 2): which frame number to use as that query -- defaults
+    to the group's own top-1 frame when not given, but the caller can pass
+    any frame number a user picked instead, applying only to this one
+    video's drill-down."""
+    if len(frames) >= top_g:
+        return frames[:top_g]
+
+    seed_n = seed_n if seed_n is not None else frames[0]["n"]
+    thumb = thumbnail_path(video_id, seed_n)
+    if not thumb or not Path(thumb).exists():
+        return frames  # no seed image on disk -- nothing to drill down with
+
+    try:
+        seed_image = Image.open(thumb).convert("RGB")
+    except Exception:
+        return frames
+
+    have_ns = {f["n"] for f in frames}
+    needed = top_g - len(frames)
+    # A plain video-id filter (not apply_filters' lot-range path) -- the
+    # scoped search still runs over the whole FAISS index first, so k needs
+    # enough headroom that this one video's frames actually surface in it.
+    scoped_df = apply_filters(search_siglip2_frame(seed_image, k=max(fetch_k, top_g * 40)), video_id, None)
+    if scoped_df is None or scoped_df.empty:
+        return frames
+
+    extra_rows = []
+    for _, row in scoped_df.sort_values("rank").iterrows():
+        if len(extra_rows) >= needed:
+            break
+        n = int(row["n"])
+        if n in have_ns:
+            continue
+        extra_rows.append(row)
+        have_ns.add(n)
+
+    if not extra_rows:
+        return frames
+    extra_results = df_to_results(pd.DataFrame(extra_rows), "score")
+    return frames + extra_results
+
+
+# ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
@@ -1032,6 +1205,17 @@ st.markdown("""
 /* Enter already submits the query (see the JS below) -- hide the native
    "Press Ctrl+Enter to apply" hint so it doesn't contradict that. */
 .st-key-query_text [data-testid="InputInstructions"] { display: none; }
+/* Hidden carrier widget for a pasted picture query -- see the paste-capture
+   script by the query box below. Never shown to the user; it only exists
+   so JS has a Streamlit-tracked element to write the base64 payload into.
+   NOT display:none / visibility:hidden -- Streamlit's text_area only sends
+   a programmatically-set value to the backend on blur, and browsers refuse
+   .focus()/.blur() on an element that isn't actually rendered, so it has to
+   stay a real (if invisible, zero-size, unclickable) element in the layout. */
+.st-key-query_image_data {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    opacity: 0; pointer-events: none;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1177,6 +1361,22 @@ def show_neighbors(video_id: str, center_n: int):
 
 
 @st.dialog("Video playback", width="medium")
+def frame_playback_dialog(video_id: str, n: int):
+    """Play-icon action shared by render_actions (all non-TRAKE signals,
+    Mixed, and Hierarchy): opens the source video seeked to this frame's
+    own timestamp via map-keyframes -- no marker bar, since there's only
+    ever the one frame here (TRAKE's multi-event marker bar/timer stays in
+    trake_playback_dialog below, which this is a simpler sibling of)."""
+    path = video_path(video_id)
+    if not Path(path).exists():
+        st.error(f"Video file not found: {path}")
+        return
+    ts, _fps = keyframe_timestamp(video_id, n)
+    st.subheader(f"{video_id} — frame {n}")
+    st.video(path, start_time=int(ts) if ts is not None else 0)
+
+
+@st.dialog("Video playback", width="medium")
 def trake_playback_dialog(video_id: str, events: list):
     """TRAKE's play-icon action: opens the source video seeked near the
     first matched event, with a click-to-seek marker row for every matched
@@ -1280,7 +1480,13 @@ def render_trake_playback_binder():
             if (bar) bindOne(bar);
         }
         scan();
-        new MutationObserver(scan).observe(document.body, {childList: true, subtree: true});
+        // Guarded singleton -- render_trake_playback_binder() runs on every
+        // rerun a TRAKE results view is showing, same accumulation risk as
+        // the other MutationObserver-based scripts here.
+        if (!window.__hierTrakePlaybackObserverBound) {
+            window.__hierTrakePlaybackObserverBound = true;
+            new MutationObserver(scan).observe(document.body, {childList: true, subtree: true});
+        }
     })();
     </script>
     """, unsafe_allow_javascript=True)
@@ -1309,6 +1515,8 @@ def render_actions(video_id: str, center_n: int, key_prefix: str, key_suffix: st
     with st.container(horizontal=True):
         if st.button(":material/more_horiz:", key=f"{key_prefix}_more_{key_suffix}", help="Show more"):
             show_neighbors(video_id, center_n)
+        if st.button(":material/play_circle:", key=f"{key_prefix}_play_{key_suffix}", help="Play video"):
+            frame_playback_dialog(video_id, center_n)
         if collection_only:
             st.button(":material/content_copy:", key=f"{key_prefix}_copy_{key_suffix}", help="Copy collection id",
                       on_click=copy_collection_only, args=(video_id,))
@@ -1396,22 +1604,27 @@ SIGNAL_ICONS = {
     "Summary": ":material/edit:",
     "Mixed": ":material/call_merge:",
     "TRAKE": ":material/route:",
+    "Hierarchy": ":material/account_tree:",
 }
 
-# Signal choices offered per TRAKE event row -- same six as the segmented
-# control above, computed once so it stays in sync if SIGNAL_ICONS changes.
-TRAKE_EVENT_SIGNALS = [name for name in SIGNAL_ICONS if name != "TRAKE"]
+# Signal choices offered per TRAKE event row -- same as the segmented
+# control above minus TRAKE itself (nested TRAKE makes no sense) and
+# Hierarchy (a video-grouped, drilled-down result set, not the single
+# ranked frame list trake_search_event/trake_rank_videos expect per
+# event) -- computed once so it stays in sync if SIGNAL_ICONS changes.
+TRAKE_EVENT_SIGNALS = [name for name in SIGNAL_ICONS if name not in ("TRAKE", "Hierarchy")]
 
 with st.sidebar:
     st.header("Search")
 
-    # Two rows: the five frame/text signals, then Mixed + TRAKE on their own
-    # row below. Two independent segmented_control widgets (Streamlit has no
-    # multi-row option within one) kept mutually exclusive via on_change --
-    # picking one clears the other's key so exactly one of the two is ever
-    # highlighted, and `mode` is just whichever key is non-None.
+    # Two rows: the five frame/text signals, then Mixed + TRAKE + Hierarchy
+    # on their own row below. Two independent segmented_control widgets
+    # (Streamlit has no multi-row option within one) kept mutually
+    # exclusive via on_change -- picking one clears the other's key so
+    # exactly one of the two is ever highlighted, and `mode` is just
+    # whichever key is non-None.
     ROW1_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR", "Summary"]
-    ROW2_SIGNALS = ["Mixed", "TRAKE"]
+    ROW2_SIGNALS = ["Mixed", "TRAKE", "Hierarchy"]
     st.session_state.setdefault("mode_row1", "Keyframe")
     st.session_state.setdefault("mode_row2", None)
 
@@ -1446,7 +1659,7 @@ with st.sidebar:
         # actually commits a text_area's value and triggers the rerun --
         # the box still soft-wraps long text on its own, it just never
         # accepts an explicit newline from the user.
-        query = st.text_area("Query", placeholder="e.g. một người đàn ông đang lái xe máy",
+        query = st.text_area("Query", placeholder="e.g. một người đàn ông đang lái xe máy (or paste an image)",
                               key="query_text", label_visibility="collapsed")
         st.html("""
         <script>
@@ -1464,10 +1677,122 @@ with st.sidebar:
                 });
             }
             bind();
-            new MutationObserver(bind).observe(document.body, {childList: true, subtree: true});
+            // Guarded singleton: this whole <script> block re-runs on EVERY
+            // Streamlit rerun (any button/dialog/widget interaction, not
+            // just a new query), since it's emitted unconditionally each
+            // time the sidebar renders. Without this guard, each rerun left
+            // behind one more permanent MutationObserver on document.body
+            // (bind()'s own dataset check only stops double-binding the
+            // *listener*, not the observer) -- they compound over a
+            // session until the accumulated observers make every DOM
+            // mutation (i.e. every future rerun) progressively slower,
+            // which is exactly what made unrelated buttons like "Show
+            // more"/"Copy" feel like they hung.
+            if (!window.__hierQueryEnterObserverBound) {
+                window.__hierQueryEnterObserverBound = true;
+                new MutationObserver(bind).observe(document.body, {childList: true, subtree: true});
+            }
         })();
         </script>
         """, unsafe_allow_javascript=True)
+
+        # Picture-query input: paste an image directly into the query box
+        # above, no separate upload control. A 'paste' listener on that
+        # textarea intercepts any image in the clipboard, base64-encodes it
+        # client-side, and writes it into this hidden text_area (the only
+        # way to get binary-ish data into Streamlit's session_state without
+        # a real file uploader) via focus + native-setter + dispatched-
+        # 'input' + blur (see commitValue() below) -- React controlled
+        # inputs ignore a plain `.value =` assignment, so it has to go
+        # through the underlying property setter for 'input' to stick, and
+        # Streamlit's text_area itself only ships a value to the backend on
+        # blur/Ctrl+Enter, not on every 'input' event.
+        def _consume_pasted_image():
+            """on_change callback for the hidden carrier widget -- runs
+            BEFORE the rerun re-instantiates it, so it's safe to clear its
+            backing value here (Streamlit forbids writing to a widget's
+            session_state key after instantiation, same convention as
+            copy_to_scope's on_click). This is what keeps a pasted picture
+            query cheap long-term: a widget's session_state value is part
+            of what Streamlit re-transmits over the websocket on EVERY
+            future rerun -- ANY rerun, not just ones touching the image --
+            so leaving a multi-MB base64 string sitting in one there made
+            every later click (Show more, Copy, an unrelated text search,
+            ...) progressively heavier for the rest of the session. Once
+            decoded here, only the raw bytes survive, in a plain
+            (non-widget) session_state entry that never leaves the server."""
+            raw = st.session_state.get("query_image_data", "")
+            if raw.startswith("data:image"):
+                try:
+                    _, b64_payload = raw.split(",", 1)
+                    st.session_state.query_image_bytes = base64.b64decode(b64_payload)
+                except Exception:
+                    st.session_state.query_image_bytes = None
+            st.session_state.query_image_data = ""
+
+        st.text_area("Pasted image (hidden)", key="query_image_data", label_visibility="collapsed",
+                     on_change=_consume_pasted_image)
+        st.html("""
+        <script>
+        (function() {
+            function commitValue(el, value) {
+                // Streamlit's text_area only ships a programmatically-set
+                // value back to the backend on blur (or Ctrl+Enter) -- so
+                // this has to focus the element, set the value through
+                // React's tracked setter, fire 'input' so React notices,
+                // THEN blur to actually trigger the commit + rerun.
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                el.focus();
+                setter.call(el, value);
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.blur();
+            }
+            function bind() {
+                const ta = document.querySelector('.st-key-query_text textarea');
+                const hidden = document.querySelector('.st-key-query_image_data textarea');
+                if (!ta || !hidden || ta.dataset.pasteImageBound) return;
+                ta.dataset.pasteImageBound = "1";
+                ta.addEventListener('paste', function(e) {
+                    const items = (e.clipboardData || window.clipboardData).items;
+                    for (let i = 0; i < items.length; i++) {
+                        if (items[i].type.indexOf('image') === 0) {
+                            e.preventDefault();
+                            const file = items[i].getAsFile();
+                            const reader = new FileReader();
+                            reader.onload = function(ev) { commitValue(hidden, ev.target.result); };
+                            reader.readAsDataURL(file);
+                            break;
+                        }
+                    }
+                });
+            }
+            bind();
+            // Same guarded-singleton reasoning as the Enter-submit script
+            // above -- this block also re-runs on every rerun.
+            if (!window.__hierQueryPasteObserverBound) {
+                window.__hierQueryPasteObserverBound = true;
+                new MutationObserver(bind).observe(document.body, {childList: true, subtree: true});
+            }
+        })();
+        </script>
+        """, unsafe_allow_javascript=True)
+
+        image_query = None
+        img_bytes = st.session_state.get("query_image_bytes")
+        if img_bytes:
+            try:
+                image_query = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            except Exception as e:
+                st.warning(f"Couldn't decode the pasted image ({e}).")
+                st.session_state.query_image_bytes = None
+
+        if image_query is not None:
+            query = image_query  # an image query takes priority over any typed text
+            col_prev, col_clear = st.columns([3, 1])
+            col_prev.image(image_query, caption="Image query", width=120)
+            if col_clear.button("Clear", key="clear_query_image"):
+                st.session_state.query_image_bytes = None
+                st.rerun()
 
         if mode == "Mixed":
             _weights_button("mixed_weights_btn")
@@ -1556,7 +1881,13 @@ with st.sidebar:
                 });
             }
             bindAll();
-            new MutationObserver(bindAll).observe(document.body, {childList: true, subtree: true});
+            // Guarded singleton -- see the same note on the single-signal
+            // Query box's Enter-submit script; this block re-runs on every
+            // TRAKE-mode rerun too.
+            if (!window.__hierTrakeEnterObserverBound) {
+                window.__hierTrakeEnterObserverBound = true;
+                new MutationObserver(bindAll).observe(document.body, {childList: true, subtree: true});
+            }
         })();
         </script>
         """, unsafe_allow_javascript=True)
@@ -1580,7 +1911,7 @@ with st.sidebar:
     video_filter = video_filter_text if use_video_scope else ""
     lot_filter = parse_lot_range(lot_filter_text) if use_collection_scope else None
 
-    group_mode, trake_top_v = None, DISPLAY_N
+    group_mode, trake_top_v, hier_top_g = None, DISPLAY_N, TOP_G_DEFAULT
 
     def _snap_top_k():
         st.session_state.top_k = round_top_k(st.session_state.top_k)
@@ -1590,15 +1921,23 @@ with st.sidebar:
         col_k.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
                             key="top_k", on_change=_snap_top_k)
         trake_top_v = col_v2.number_input("Top-V", min_value=1, max_value=50, value=10, step=1, key="trake_top_v")
+    elif mode == "Hierarchy":
+        col_k, col_g = st.columns(2)
+        col_k.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
+                            key="top_k", on_change=_snap_top_k)
+        hier_top_g = col_g.number_input("Top-G", min_value=1, max_value=50, value=TOP_G_DEFAULT, step=1, key="hier_top_g",
+                                         help="Frames kept per video after per-video drill-down.")
     else:
         st.number_input("Top-K", min_value=1, max_value=200, value=DISPLAY_N, step=5,
                          key="top_k", on_change=_snap_top_k)
     top_k = round_top_k(st.session_state.top_k)
     fetch_k = max(FETCH_K, top_k)
 
-    if mode != "TRAKE":
+    if mode not in ("TRAKE", "Hierarchy"):
         # Summary results are already one-per-video, so "group by video"
         # would be a no-op there -- group by collection (lot) instead.
+        # Hierarchy is always grouped by video by construction, so it skips
+        # this toggle entirely (see the Hierarchy branch below).
         group_toggle_label = "Group by collection" if mode == "Summary" else "Group by video"
         group_toggled = st.toggle(group_toggle_label, key="group_by_video")
         if group_toggled:
@@ -1626,6 +1965,9 @@ with st.sidebar:
         use_siglip_sum = st.checkbox("SigLIP2 Summary", value=True, key="sum_use_siglip")
         use_fuzzy = st.checkbox("Fuzzy Summary", value=True, key="sum_use_fuzzy")
         use_rrf = st.checkbox("RRF Summary", value=True, key="sum_use_rrf")
+    elif mode == "Hierarchy":
+        st.caption("SigLIP2 frame search, grouped by video, drilled down to Top-G frames/video. "
+                   "No leg choice -- text or picture query, SigLIP2 only.")
 
 if mode == "Keyframe":
     if query:
@@ -1640,10 +1982,16 @@ if mode == "Keyframe":
             render_grid(df_to_results(siglip2_df.head(top_k), "score"), "kf_sig", group_mode)
         if use_clip:
             st.subheader("CLIP")
-            render_grid(df_to_results(clip_df.head(top_k), "score"), "kf_clip", group_mode)
+            if is_image_query(query):
+                st.caption("Skipped — picture queries are SigLIP2-only.")
+            else:
+                render_grid(df_to_results(clip_df.head(top_k), "score"), "kf_clip", group_mode)
         if use_rrf:
             st.subheader("RRF")
-            render_grid(df_to_results(rrf_fuse_frame([siglip2_df, clip_df], top_n=top_k), "rrf_score"), "kf_rrf", group_mode)
+            if is_image_query(query):
+                st.caption("Skipped — picture queries only ever have one active leg (SigLIP2), nothing to fuse.")
+            else:
+                render_grid(df_to_results(rrf_fuse_frame([siglip2_df, clip_df], top_n=top_k), "rrf_score"), "kf_rrf", group_mode)
         if not (use_siglip2 or use_clip or use_rrf):
             st.info("Check at least one search option in the sidebar.")
     else:
@@ -1665,8 +2013,11 @@ elif mode == "ASR":
             render_grid(df_to_results(attach_keyframe_asr(fuzzy_df).head(top_k), "score", "text"), "asr_fuzzy", group_mode)
         if use_rrf:
             st.subheader("RRF ASR")
-            fused = attach_keyframe_asr(rrf_fuse_asr({"siglip_asr": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
-            render_grid(df_to_results(fused, "rrf_score", "text"), "asr_rrf", group_mode)
+            if is_image_query(query):
+                st.caption("Skipped — picture queries only ever have one active leg (SigLIP2), nothing to fuse.")
+            else:
+                fused = attach_keyframe_asr(rrf_fuse_asr({"siglip_asr": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
+                render_grid(df_to_results(fused, "rrf_score", "text"), "asr_rrf", group_mode)
         if not (use_siglip_asr or use_fuzzy or use_rrf):
             st.info("Check at least one search option in the sidebar.")
     else:
@@ -1688,8 +2039,11 @@ elif mode == "Caption":
             render_grid(df_to_results(attach_keyframe_caption(fuzzy_df).head(top_k), "score", "text"), "cap_fuzzy", group_mode)
         if use_rrf:
             st.subheader("RRF Caption")
-            fused = attach_keyframe_caption(rrf_fuse_caption({"siglip_caption": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
-            render_grid(df_to_results(fused, "rrf_score", "text"), "cap_rrf", group_mode)
+            if is_image_query(query):
+                st.caption("Skipped — picture queries only ever have one active leg (SigLIP2), nothing to fuse.")
+            else:
+                fused = attach_keyframe_caption(rrf_fuse_caption({"siglip_caption": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
+                render_grid(df_to_results(fused, "rrf_score", "text"), "cap_rrf", group_mode)
         if not (use_siglip_cap or use_fuzzy or use_rrf):
             st.info("Check at least one search option in the sidebar.")
     else:
@@ -1697,9 +2051,12 @@ elif mode == "Caption":
 
 elif mode == "OCR":
     if query:
-        df = apply_filters(search_ocr_fuzzy(query, k=fetch_k), video_filter, lot_filter)
-        st.subheader("Fuzzy OCR")
-        render_grid(df_to_results(attach_keyframe_ocr(df).head(top_k), "score", "text"), "ocr_fuzzy", group_mode)
+        if is_image_query(query):
+            st.info("OCR is fuzzy text search only — not available for picture queries.")
+        else:
+            df = apply_filters(search_ocr_fuzzy(query, k=fetch_k), video_filter, lot_filter)
+            st.subheader("Fuzzy OCR")
+            render_grid(df_to_results(attach_keyframe_ocr(df).head(top_k), "score", "text"), "ocr_fuzzy", group_mode)
     else:
         st.info("Type a query to search.")
 
@@ -1719,8 +2076,11 @@ elif mode == "Summary":
             render_grid(df_to_results(attach_keyframe_summary(fuzzy_df).head(top_k), "score", "text"), "sum_fuzzy", group_mode)
         if use_rrf:
             st.subheader("RRF Summary")
-            fused = attach_keyframe_summary(rrf_fuse_summary({"siglip_summary": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
-            render_grid(df_to_results(fused, "rrf_score", "text"), "sum_rrf", group_mode)
+            if is_image_query(query):
+                st.caption("Skipped — picture queries only ever have one active leg (SigLIP2), nothing to fuse.")
+            else:
+                fused = attach_keyframe_summary(rrf_fuse_summary({"siglip_summary": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
+                render_grid(df_to_results(fused, "rrf_score", "text"), "sum_rrf", group_mode)
         if not (use_siglip_sum or use_fuzzy or use_rrf):
             st.info("Check at least one search option in the sidebar.")
     else:
@@ -1748,6 +2108,75 @@ elif mode == "Mixed":
             render_grid(df_to_results(fused, "rrf_score"), "mixed", group_mode)
     else:
         st.info("Type a query to search.")
+
+elif mode == "Hierarchy":
+    if query:
+        base_df = apply_filters(search_siglip2_frame(query, k=fetch_k), video_filter, lot_filter)
+        if base_df is None or base_df.empty:
+            st.info("No results.")
+        else:
+            # Same grouping render_grid's group_mode="video" does -- results
+            # already arrive rank-sorted, so each video's first occurrence
+            # is its best (lowest-rank) frame and fixes that group's own
+            # display order.
+            base_results = df_to_results(base_df.head(top_k), "score")
+            groups: dict = {}
+            order = []
+            for r in base_results:
+                vid = r["video_id"]
+                if vid not in groups:
+                    groups[vid] = []
+                    order.append(vid)
+                groups[vid].append(r)
+
+            # Per-video Top-G override: the "Expand" button below bumps just
+            # that one video's effective G by 10, independent of every other
+            # group and of the sidebar's Top-G control -- keyed by video_id
+            # so it survives reruns until the page is reset.
+            st.session_state.setdefault("hier_extra_g", {})
+            extra_g = st.session_state.hier_extra_g
+
+            st.subheader("Hierarchy Search")
+            for vid in order:
+                best = groups[vid][0]
+                st.markdown(f"**{vid}** · best rank {best['rank']} · {best['score_label']}={best['score_val']:.4f} · "
+                            f"{len(groups[vid])} frame(s) from Step 1")
+
+                # Step 2: seed-frame picker, scoped to this video only --
+                # options are this video's own Step 1 frames, default
+                # (index 0) is the top-1 frame. The widget's own
+                # session_state (keyed per video_id) IS the seed store, so
+                # picking a different frame here and nothing else already
+                # persists it across reruns.
+                seed_options = [f["n"] for f in groups[vid]]
+                top1_n = seed_options[0]
+                seed_n = st.selectbox(
+                    f"Seed frame for {vid}", seed_options, key=f"hier_seed_{vid}",
+                    label_visibility="collapsed",
+                    format_func=lambda n, top1=top1_n: f"Seed: frame {n}" + (" (top-1)" if n == top1 else ""),
+                )
+
+                # Step 3: drill-down using that seed, up to this video's
+                # effective Top-G (sidebar Top-G + any "Expand" bumps).
+                effective_g = hier_top_g + extra_g.get(vid, 0)
+                frames = hierarchy_expand_group(vid, groups[vid], effective_g, fetch_k, seed_n=seed_n)
+                cols_per_row = 5
+                for start in range(0, len(frames), cols_per_row):
+                    chunk = frames[start : start + cols_per_row]
+                    cols = st.columns(cols_per_row)
+                    for col, r in zip(cols, chunk):
+                        render_thumb(col, r)
+                col_actions, col_expand = st.columns([4, 1])
+                with col_actions:
+                    render_actions(vid, best["n"], "hier", f"grp_{vid}")
+                with col_expand:
+                    if st.button("Expand", icon=":material/arrow_downward:", key=f"hier_expand_{vid}",
+                                 help="Pull in 10 more frames from this video", width="stretch"):
+                        extra_g[vid] = extra_g.get(vid, 0) + 10
+                        st.rerun()
+                st.divider()
+    else:
+        st.info("Type a query, or paste an image, to search.")
 
 elif mode == "TRAKE":
     events_cfg = st.session_state.get("trake_events", [])
