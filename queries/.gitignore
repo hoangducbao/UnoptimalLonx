@@ -1,4 +1,5 @@
-# peers/tmp — everything under queries/ is ignored by git except these examples.
+# everything under queries/ is ignored by git except the committed examples.
 *
 !.gitignore
+!examples/
 !examples/**
