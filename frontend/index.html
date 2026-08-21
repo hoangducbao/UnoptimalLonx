@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Routing101 by MiLF</title>
+<link rel="stylesheet" href="/app/css/style.css">
+</head>
+<body>
+<div class="layout">
+
+  <aside class="sidebar">
+    <h2>Search</h2>
+
+    <div class="signal-row" id="signal-row">
+      <button class="signal-btn" data-signal="Keyframe" title="Keyframe">🖼️</button>
+      <button class="signal-btn" data-signal="ASR" title="ASR">🎙️</button>
+      <button class="signal-btn" data-signal="Caption" title="Caption">💬</button>
+      <button class="signal-btn" data-signal="OCR" title="OCR">📷</button>
+      <button class="signal-btn" data-signal="Summary" title="Summary">✏️</button>
+    </div>
+    <div class="signal-row">
+      <button class="signal-btn" data-signal="Mixed" title="Mixed">🔀</button>
+      <button class="signal-btn" data-signal="TRAKE" title="TRAKE">🧭</button>
+      <button class="signal-btn" data-signal="Hierarchy" title="Hierarchy">🌳</button>
+    </div>
+
+    <div id="standard-query-section">
+      <label for="query-text">Query</label>
+      <textarea id="query-text" placeholder="e.g. một người đàn ông đang lái xe máy (or paste an image)"></textarea>
+
+      <div class="image-query-preview" id="image-query-preview" style="display:none;">
+        <img id="image-query-thumb" alt="pasted query image">
+        <button class="btn" id="clear-image-query">Clear</button>
+      </div>
+    </div>
+
+    <div id="trake-query-section" style="display:none;"></div>
+
+    <div class="scope-row">
+      <div>
+        <label for="video-filter">Search in video</label>
+        <input type="text" id="video-filter" placeholder="e.g. L21_V001">
+        <div class="checkbox-row">
+          <input type="checkbox" id="use-video-scope">
+          <label for="use-video-scope" style="margin:0;">Use video</label>
+        </div>
+      </div>
+      <div>
+        <label for="lot-filter">Search in collection</label>
+        <input type="text" id="lot-filter" placeholder="e.g. L21-L30">
+        <div class="checkbox-row">
+          <input type="checkbox" id="use-collection-scope">
+          <label for="use-collection-scope" style="margin:0;">Use collection</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="scope-row">
+      <div>
+        <label for="top-k">Top-K</label>
+        <input type="number" id="top-k" value="30" min="1" max="200" step="5">
+      </div>
+      <div id="top-v-wrap" style="display:none;">
+        <label for="top-v">Top-V</label>
+        <input type="number" id="top-v" value="10" min="1" max="50" step="1">
+      </div>
+      <div id="top-g-wrap" style="display:none;">
+        <label for="top-g" title="Frames kept per video after per-video drill-down.">Top-G</label>
+        <input type="number" id="top-g" value="5" min="1" max="50" step="1">
+      </div>
+    </div>
+
+    <div class="checkbox-row" id="group-by-row">
+      <input type="checkbox" id="group-by-video">
+      <label for="group-by-video" style="margin:0;">Group by video</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="show-full-text">
+      <label for="show-full-text" style="margin:0;">Show full text</label>
+    </div>
+
+    <hr class="divider">
+
+    <div id="signal-controls"><!-- populated per-signal by signals/*.js --></div>
+  </aside>
+
+  <main class="main">
+    <h1>Routing101 by MiLF</h1>
+    <div id="status-banner"></div>
+    <div id="results"></div>
+  </main>
+
+</div>
+
+<div id="dialog-root"></div>
+
+<script type="module" src="/app/js/app.js"></script>
+</body>
+</html>

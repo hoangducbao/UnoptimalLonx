@@ -1,0 +1,295 @@
+/* frontend/css/style.css -- full layout (Streamlit's own chrome is gone, so
+   this covers page structure too) plus the two thumbnail-hover rules
+   ported verbatim from ui/app.py:1186-1220. */
+
+:root {
+    --bg: #ffffff;
+    --bg-sidebar: #f0f2f6;
+    --text: #262730;
+    --text-muted: #6b7280;
+    --border: #d6d9de;
+    --accent: #ff4b4b;
+    --accent-soft: #ffe8e8;
+    --radius: 6px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+}
+
+.layout {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Sidebar */
+/* ---------------------------------------------------------------------- */
+
+.sidebar {
+    width: 320px;
+    flex: none;
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    padding: 1.25rem 1rem;
+    overflow-y: auto;
+    height: 100vh;
+    position: sticky;
+    top: 0;
+}
+
+.sidebar h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1.1rem;
+}
+
+.signal-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+
+.signal-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #fff;
+    cursor: pointer;
+    font-size: 1.1rem;
+}
+
+.signal-btn:hover { background: var(--accent-soft); }
+.signal-btn.active { border-color: var(--accent); background: var(--accent-soft); }
+.signal-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.sidebar label {
+    display: block;
+    font-size: 0.85rem;
+    margin: 0.75rem 0 0.25rem;
+    color: var(--text-muted);
+}
+
+.sidebar textarea,
+.sidebar input[type="text"],
+.sidebar input[type="number"] {
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.9rem;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #fff;
+    color: var(--text);
+    resize: vertical;
+}
+
+.sidebar textarea { min-height: 64px; }
+
+.scope-row { display: flex; gap: 0.5rem; }
+.scope-row > div { flex: 1; }
+
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.88rem;
+    margin: 0.35rem 0;
+}
+.checkbox-row input { margin: 0; }
+
+.image-query-preview {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+}
+.image-query-preview img {
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+button {
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.btn {
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #fff;
+    font-size: 0.85rem;
+}
+.btn:hover { background: var(--accent-soft); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover { filter: brightness(1.05); }
+
+/* ---------------------------------------------------------------------- */
+/* Main content */
+/* ---------------------------------------------------------------------- */
+
+.main {
+    flex: 1;
+    padding: 1.5rem 2rem;
+    min-width: 0;
+}
+
+.main h1 { margin-top: 0; }
+.main h2 { margin: 1.5rem 0 0.75rem; }
+
+.status-banner {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+.status-banner.info { background: #e8f0fe; border-color: #b3d1ff; }
+.status-banner.warn { background: #fff8e1; border-color: #ffe08a; }
+.status-banner.error { background: #fdeaea; border-color: #f3b8b8; }
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.75rem 1rem;
+    margin-bottom: 1rem;
+}
+
+@media (max-width: 1100px) {
+    .grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.thumb-cell { font-size: 0.82rem; }
+
+.thumb-wrap { position: relative; overflow: visible; z-index: 1; line-height: 0; }
+.thumb-wrap img {
+    width: 100%; display: block; border-radius: 4px;
+    transition: transform 0.15s ease-out, box-shadow 0.15s ease-out;
+    transform-origin: center center;
+}
+.thumb-wrap:hover { z-index: 100; }
+.thumb-wrap:hover img {
+    transform: scale(2.2);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    position: relative;
+}
+/* TRAKE result cards with only 1-2 events: the zoom-on-hover above is more
+   distracting than useful with so few thumbnails already at a decent size,
+   so it's suppressed for those (kept for 3+ event cards). */
+.thumb-wrap-static:hover { z-index: 1; }
+.thumb-wrap-static:hover img { transform: none; box-shadow: none; position: static; }
+
+.thumb-missing {
+    aspect-ratio: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f3f4f6;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.thumb-caption { color: var(--text); margin-top: 0.25rem; }
+.thumb-caption.muted { color: var(--text-muted); }
+.thumb-text { color: var(--text-muted); margin-top: 0.15rem; }
+
+.thumb-actions {
+    display: flex;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+}
+.icon-btn {
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    font-size: 0.85rem;
+    padding: 0;
+}
+.icon-btn:hover { background: var(--accent-soft); }
+
+.group-header {
+    font-size: 0.9rem;
+    margin: 0.75rem 0 0.4rem;
+}
+
+.divider { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
+
+/* ---------------------------------------------------------------------- */
+/* Dialogs */
+/* ---------------------------------------------------------------------- */
+
+.dialog-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 4rem 1rem;
+    z-index: 1000;
+}
+
+.dialog-box {
+    background: #fff;
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    width: 100%;
+    max-width: 640px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+.dialog-box.wide { max-width: 900px; }
+
+.dialog-box h3 { margin-top: 0; }
+
+.dialog-close {
+    float: right;
+    border: none;
+    background: none;
+    font-size: 1.2rem;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+.dialog-box video { width: 100%; border-radius: 4px; }
+
+#trake-marker-bar {
+    position: relative;
+    height: 18px;
+    margin: 4px 0 8px;
+    background: rgba(127, 127, 127, 0.15);
+    border-radius: 4px;
+}
+#trake-timer { font-family: monospace; font-size: 0.9rem; }
+.trake-marker-tick {
+    position: absolute; top: 0; bottom: 0;
+    transform: translateX(-50%);
+    cursor: pointer;
+    background: #e64980;
+    color: white;
+    font-size: 10px;
+    padding: 0 4px;
+    border-radius: 3px;
+    line-height: 18px;
+}
