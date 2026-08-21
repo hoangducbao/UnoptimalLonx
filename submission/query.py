@@ -58,7 +58,7 @@ def _strip_numbering(line: str) -> str:
 
 
 def parse_trake(text: str) -> list:
-    """Split (a) TRAKE query text into an ordered list of event sub-queries.
+    """Split a TRAKE query text into an ordered list of event sub-queries.
 
     Expected layout (BTC's typical 'one event per line'):
         1. A person walks into a room

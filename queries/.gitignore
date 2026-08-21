@@ -1,0 +1,4 @@
+# peers/tmp — everything under queries/ is ignored by git except these examples.
+*
+!.gitignore
+!examples/**

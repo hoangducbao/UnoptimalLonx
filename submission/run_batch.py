@@ -6,6 +6,9 @@ Flow per file:
   2. run Mixed-mode search (or TRAKE over Mixed events)
   3. normalize to CodaBench rows
   4. write a UTF-8, comma-delimited, header-less .csv with correct quoting
+
+Robustness: one un-parsable/failing query file is reported and skipped — it
+never aborts the rest of the batch.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from pathlib import Path
 from . import csvout, pipeline
 from .answer import generate_answer
 from .config import SubmissionConfig
-from .query import Query, QueryType, parse_query_file
+from .query import QueryType, parse_query_file
 
 
 def run_batch(cfg: SubmissionConfig) -> list:
@@ -30,36 +33,42 @@ def run_batch(cfg: SubmissionConfig) -> list:
     print("[run_batch] warming up in-process pipeline (one set of model weights)...")
     pipeline.warmup(cfg)
 
-    outdir = Path(cfg.output_dir)
-    outdir.mkdir(parents=True, exist_ok=True)
+    Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
 
-    summary = []
+    summary, errors = [], []
     for qf in qfiles:
-        q = parse_query_file(qf)
-        out_path = outdir / q.output_name
+        try:
+            q = parse_query_file(qf)
+            out_path = Path(cfg.output_dir) / q.output_name
 
-        if q.type is QueryType.KIS:
-            results = pipeline.mixed_results(q.text, cfg)
-            csvout.write_kis(out_path, results, cfg)
+            if q.type is QueryType.KIS:
+                results = pipeline.mixed_results(q.text, cfg)
+                csvout.write_kis(out_path, results, cfg)
 
-        elif q.type is QueryType.QA:
-            cands = pipeline.mixed_results(q.text, cfg)
-            rows = [
-                {"video_id": c["video_id"], "n": c["n"],
-                 "answer": generate_answer(q.text, cfg, c)}
-                for c in cands
-            ]
-            csvout.write_qa(out_path, rows, cfg)
+            elif q.type is QueryType.QA:
+                cands = pipeline.mixed_results(q.text, cfg)
+                rows = [
+                    {"video_id": c["video_id"], "n": c["n"],
+                     "answer": generate_answer(q.text, cfg, c)}
+                    for c in cands
+                ]
+                csvout.write_qa(out_path, rows, cfg)
 
-        elif q.type is QueryType.TRAKE:
-            results = pipeline.trake_results(q.events, cfg)
-            csvout.write_trake(out_path, results, cfg)
+            elif q.type is QueryType.TRAKE:
+                results = pipeline.trake_results(q.events, cfg)
+                csvout.write_trake(out_path, results, cfg)
 
-        else:
-            raise RuntimeError(f"unhandled query type: {q.type}")
+            else:
+                raise RuntimeError(f"unhandled query type: {q.type}")
 
-        summary.append((q.name, len(results), out_path))
-        print(f"[run_batch] {q.name} -> {out_path} ({len(results)} rows)")
+            summary.append((q.name, len(results), out_path))
+            print(f"[run_batch] {q.name} -> {out_path} ({len(results)} rows)")
 
-    print("[run_batch] done.")
+        except Exception as e:  # noqa: BLE001 — keep the batch alive on a single bad file
+            errors.append((qf.name, str(e)))
+            print(f"[run_batch] SKIPPED {qf.name}: {e}")
+
+    for name, err in errors:
+        print(f"[run_batch] failed: {name} ({err})")
+    print(f"[run_batch] done — {len(summary)} ok, {len(errors)} skipped.")
     return summary

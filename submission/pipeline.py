@@ -37,7 +37,7 @@ def _warn(msg: str) -> None:
 def warmup(cfg) -> None:
     """Build/load every index + model the Mixed/TRAKE legs touch. Mirrors
     backend/main.py's lifespan warmup, but never raises — a missing asset just
-    marks that leg unusable (each search count returns empty and moves on)."""
+    marks that leg unusable (each search call returns empty and moves on)."""
     from backend.models import DEVICE
 
     bk_config.tune_thread_pools(DEVICE)

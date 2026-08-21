@@ -15,14 +15,15 @@ pipeline/
   clip_encoder.py     Multilingual-CLIP text tower, paired with CLIP ViT-B/32 image features
 ui/
   app.py              combined Streamlit UI — all three layers below, one process
+backend/              FastAPI rewrite of ui/app.py (see backend/main.py)
+frontend/             static HTML/CSS/JS frontend served by the FastAPI app
 index/                generated FAISS indices (git-ignored), reused across app runs
 routing101.ipynb        annotated walkthrough: keyframe embeddings (SigLIP2 / CLIP ViT-B/32 / RRF)
 routing101_asr.ipynb     annotated walkthrough: ASR-segment search + RRF, mapped to keyframes
 routing101_caption.ipynb annotated walkthrough: frame-caption search + RRF, mapped to keyframes
-submission/
-  run_submission.py    CLI entry: run a folder of query*.txt through the pipeline -> CodaBench CSV
-  README.md            usage + expected output format
-  config.py query.py pipeline.py answer.py csvout.py run_batch.py
+run_submission.py      CLI entry: run a folder of query*.txt through the pipeline -> CodaBench CSV
+submission/            CodaBench batch tool (config.py, query.py, pipeline.py, answer.py, csvout.py, run_batch.py)
+queries/               place organizer query*.txt files here (see queries/examples/)
 ```
 
 ## Layers
@@ -90,3 +91,80 @@ of host RAM) is far more than needed.
 
 If ES isn't reachable, the fuzzy leg degrades to an empty result (with an
 on-page warning) rather than breaking the other legs.
+
+## Submission tool (CodaBench batch)
+
+This repo ships an automatic **CodaBench submission batch tool** that reads the
+competition (BTC) query files (`query-1-kis.txt`, `query-2-qa.txt`,
+`query-3-trake.txt`, …), runs each through the in-process **Mixed-mode**
+pipeline, and writes the per-query `.csv` submission files in the exact format
+BTC expects.
+
+### Requirements
+
+- `pip install -r requirements.txt` (torch, faiss, transformers, fastapi,
+  uvicorn, elasticsearch, cachetools, …).
+- The AIC data + embeddings must be at the hardcoded paths in
+  `backend/config.py` (currently `D:/University/Summ26/AICData*`). Without it
+  the tool still runs but every query yields an **empty** CSV, with warnings.
+- Elasticsearch (`http://localhost:9200`) is optional — without it the fuzzy
+  legs warn and simply contribute nothing.
+- The tool runs **in-process** (one set of model weights), so run it from the
+  repo root — never alongside a separate UI/backend process that already holds
+  the ~4 GB of weights.
+
+### Step 1 — put the query files in a folder
+
+Drop the BTC query `.txt` files anywhere (e.g. `queries/round1/`). The file
+**name suffix decides the query type**:
+
+| File suffix | Query type | CSV line format |
+|---|---|---|
+| `query-*-kis.txt` | Textual Known Item Search | `<video>, <Frame Idx>` |
+| `query-*-qa.txt` | Question & Answer | `<video>, <Frame Idx>, <Answer>` |
+| `query-*-trake.txt` | TRAKE (ordered event chain) | `<video>, <Frame ID_1>, ..., <Frame ID_N>` |
+
+- KIS / Q&A files: one free-text query per file.
+- TRAKE files: **one event per line** (numbering `1.` / `1)` / `(1)` is
+  optional and stripped automatically). The output row will carry exactly
+  `N` frame ids in chronological order.
+- Ready-made examples live in `queries/examples/`.
+
+### Step 2 — run the batch
+
+```
+python run_submission.py --queries queries/round1 --out submissions --round 1
+```
+
+| Flag | Effect | Default |
+|---|---|---|
+| `--queries DIR` | folder holding the `query-*.txt` files | `queries/` |
+| `--out DIR` | where the `.csv` files are written | `submissions/` |
+| `--round N` | write into `<out>/round-N` (nice for keeping round runs apart) | no subdir |
+| `--top-k N` | candidates fetched per leg before RRF fusion | `100` |
+| `--max-rows N` | max rows per query CSV (CodaBench cap is 100) | `100` |
+| `--answer-mode none\|caption\|ocr` | how Q&A answers are filled (see below) | `none` |
+| `--trake-signal SIG` | signal used for every TRAKE event | `Mixed` |
+| `--frame-index n\|frame_id` | which frame numbering to write | `n` (1-based keyframe) |
+
+For each query file you get `<name>.csv` (e.g. `query-1-kis.csv`).
+
+### Step 3 — the output CSV follows the CodaBench rules
+
+- Pure plain-text `.csv`: **UTF-8**, comma-delimited, **no header row**,
+  CRLF line endings by default.
+- At most **100 rows** per query (each row = one predicted result, ranked best
+  first).
+- `<Frame Idx>` is written from the pipeline's keyframe number `n`
+  (`--frame-index frame_id` switches to the 0-based index instead).
+- Q&A `<Answer>`: quoted only when the answer contains a comma, a double quote,
+  a newline, or leading/trailing whitespace. Quotes inside are escaped `""`
+  (e.g. `... ,"Anh ấy nói ""Xin chào"""`). Answers are capped at 100 chars.
+- **Answers are a plug-in**: the retrieval pipeline has no free-text VQA head.
+  With the default `--answer-mode none` every answer is left empty (good for a
+  dry run of the format). To actually answer, implement
+  `submission/answer.py -> generate_answer()` and, optionally, use
+  `--answer-mode caption` / `--answer-mode ocr` for a best-effort answer from
+  the matched frame's caption/OCR text (needs Elasticsearch).
+
+See `submission/README.md` for the module layout and more details.

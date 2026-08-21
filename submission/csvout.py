@@ -48,6 +48,8 @@ def _encode_line(line: str, cfg) -> str:
 def _write(path: Path, lines, cfg) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Hard cap per query (CodaBench allows at most 100 rows).
+    lines = list(lines)[: cfg.max_rows]
     with open(path, "w", encoding=cfg.encoding, newline="") as fh:
         fh.writelines(_encode_line(ln, cfg) for ln in lines)
 
@@ -64,12 +66,16 @@ def write_kis(path: Path, results, cfg) -> None:
 
 def write_qa(path: Path, results, cfg) -> None:
     """results: iterable of {"video_id","n","answer"} ->
-    `<video>,<Frame Idx>,<Answer>` rows with CodaQuote-safe answer quoting."""
+    `<video>,<Frame Idx>,<Answer>` rows with CodaBench-safe answer quoting.
+
+    The answer is NOT trimmed (per the brief, leading/trailing whitespace is
+    preserved and made round-trip safe by quoting); only capped at
+    answer_max_len characters.
+    """
     lines = []
     for r in results:
-        answer = (r.get("answer") or "").strip()
-        if len(answer) > cfg.answer_max_len:
-            answer = answer[: cfg.answer_max_len]
+        answer = r.get("answer") or ""
+        answer = str(answer)[: cfg.answer_max_len]
         lines.append(f"{r['video_id']},{_frame_id(cfg, r['n'])},{_quote(answer, cfg.quote_all_answers)}")
     _write(path, lines, cfg)
 
