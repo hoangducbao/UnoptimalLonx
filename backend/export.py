@@ -24,9 +24,27 @@ from the video's own existing extracted n's, ordered by |n - center| --
 equivalent to time-gap order since map-keyframes rows are chronological) --
 arbitrary non-keyframe frame_idx neighbours are a later phase.
 
-TRAKE keeps the same n-offset hedge/rank logic as before (unchanged) --
-its export-popup UI is a later phase too, still served through the
-existing confirm+export-bar flow.
+TRAKE row structure is different in kind, not just in row shape: a TRAKE
+answer is a human's exact (video_id, frame_idx_1..N) pick from watching the
+video directly, in *native* frame_idx space -- there's no keyframe `n` to
+translate, unlike KIS/VQA (its export-popup UI is a later phase, still
+just a placeholder):
+  confirmed mode:   [human-picked (video_id, frame_idxs)] + [shell hedges:
+                     every event shifted together by the same +/-15,
+                     +/-30, ... native-frame offset, widening outward] --
+                     up to max_rows.
+  unconfirmed mode: [one row per shortlisted candidate video, its own
+                     proposed frame_idx sequence, confidence order, no
+                     hedging] + [shell hedges of each candidate's sequence,
+                     same widening pattern, video-by-video in confidence
+                     order, as filler] -- up to max_rows.
+A shell hedge shifts *every* event by the same signed offset in one row,
+not one event at a time: it's a bet that the whole pick is off by a
+consistent timing drift (the human's playback-position sense was off, or a
+candidate's whole alignment is shifted), which is both a more plausible
+failure mode than one event drifting independently and a far more
+row-efficient hedge than a cross-product across events would be, since
+only the single best row per R@k band ever counts.
 
 Deliberately reuses the app's *existing* result-dict shapes instead of a
 parallel Candidate model:
@@ -35,15 +53,20 @@ parallel Candidate model:
     non-TRAKE signal already returns).
   - KIS/VQA confirmed/answers: {video_id, n} (n = the app's internal
     1-indexed keyframe ordinal).
-  - TRAKE candidates: {video_id, video_score, order_valid, coverage,
-    events: [...]} (backend/search/trake.py::trake_rank_videos), where
-    each events[i] is {event_index, label, matched, n, score_val, ...}
-    when matched.
+  - TRAKE candidates (unconfirmed mode): {video_id, video_score,
+    order_valid, coverage, events: [...]} (backend/search/trake.py::
+    trake_rank_videos), where each events[i] is {event_index, label,
+    matched, n, score_val, ...} when matched -- n gets translated to
+    frame_idx once, up front, in _generate_export_trake().
+  - TRAKE confirmed: {video_id, frame_idxs: [f1, ..., fN]} -- already
+    native frame_idx, straight from a human's manual pick, no lookup.
 
-Rows built here stay n-space; rows_to_csv_text() below does the n ->
-frame_idx translation AIC submissions actually expect (frame_idx_for_n in
-backend/common.py) plus final text formatting -- kept separate so the
-ranking/dedup logic is testable without touching map-keyframes files.
+KIS/VQA rows built here stay n-space; rows_to_csv_text() below does the n
+-> frame_idx translation AIC submissions actually expect (frame_idx_for_n
+in backend/common.py) plus final text formatting -- kept separate so the
+ranking/dedup logic is testable without touching map-keyframes files. TRAKE
+rows are already resolved to frame_idx by the time they leave
+_generate_export_trake(), so rows_to_csv_text() does no lookup for them.
 """
 
 from typing import Optional
@@ -52,10 +75,15 @@ from .common import frame_idx_for_n, valid_ns_for_video
 
 DEFAULT_NEIGHBOUR_COUNT = 10
 
-# TRAKE confirmed-mode hedge rows: same event, n offset by these (in
-# order), skipping any offset that doesn't resolve to a real keyframe.
-HEDGE_OFFSETS = [1, -1, 2, -2]
-HEDGE_ROWS = 4
+# TRAKE hedge shells: every event shifted together by this many native
+# frames, widening outward (+15, -15, +30, -30, ...). ~10 frames is the
+# scoring model's typical GT window width, so 15 clears one window's worth
+# per shell without being so small that early shells barely move.
+TRAKE_SHELL_STEP = 15
+# Upper bound on shells generated -- 60 shells * 2 signs = up to 120 hedge
+# sequences, comfortably more than a 100-row budget (minus the 1 top row)
+# could ever consume, even after dedup/negative-frame skips.
+TRAKE_MAX_SHELLS = 60
 
 
 def _flat_key(video_id, n) -> tuple:
@@ -131,79 +159,75 @@ def _generate_export_flat(candidates: list, mode: str, confirmed: Optional[dict]
     return rows
 
 
-def _generate_export_trake(candidates: list, mode: str, confirmed: Optional[dict], max_rows: int) -> list:
-    def row_and_key(c: dict):
-        row = {"video_id": c["video_id"], "ns": [int(e["n"]) for e in c["events"]]}
-        return row, (row["video_id"], tuple(row["ns"]))
+def _shell_hedges(base_frame_idxs: list) -> list:
+    """Every uniform-shift hedge sequence around base_frame_idxs, widening
+    outward in shells of TRAKE_SHELL_STEP native frames: all events +15,
+    all events -15, then +30, -30, ... (see module docstring for why a
+    shift is applied to every event together rather than one at a time).
+    A sequence is skipped if any event would go negative; shells stop
+    after TRAKE_MAX_SHELLS regardless (see its comment)."""
+    hedges = []
+    for shell in range(1, TRAKE_MAX_SHELLS + 1):
+        radius = TRAKE_SHELL_STEP * shell
+        for offset in (radius, -radius):
+            seq = [f + offset for f in base_frame_idxs]
+            if all(f >= 0 for f in seq):
+                hedges.append(seq)
+    return hedges
 
-    ranked = sorted(candidates, key=_confidence, reverse=True)
+
+def _generate_export_trake(candidates: list, mode: str, confirmed: Optional[dict], max_rows: int) -> list:
+    seen, rows = set(), []
+
+    def add(video_id: str, frame_idxs: list) -> bool:
+        key = (video_id, tuple(frame_idxs))
+        if key in seen or len(rows) >= max_rows:
+            return False
+        seen.add(key)
+        rows.append({"video_id": video_id, "frame_idxs": list(frame_idxs)})
+        return True
 
     if mode == "confirmed":
         if confirmed is None:
             raise ValueError("mode='confirmed' requires a confirmed candidate")
-        seen, rows = set(), []
-
-        def add(row, key):
-            if key in seen or len(rows) >= max_rows:
-                return
-            seen.add(key)
-            rows.append(row)
-
-        conf_row, conf_key = row_and_key(confirmed)
-        add(conf_row, conf_key)
-        for row in _hedge_rows_trake(confirmed)[:HEDGE_ROWS]:
-            add(row, (row["video_id"], tuple(row["ns"])))
-
-        # Rows 6-100: remaining candidates by confidence, exact-repeat
-        # dedup only against what's already placed above (spec: "no exact
-        # repeats") -- not the window-overlap dedup unconfirmed mode uses.
-        for c in ranked:
-            if not all(e.get("matched") for e in c["events"]):
-                continue
-            row, key = row_and_key(c)
-            add(row, key)
+        video_id = confirmed["video_id"]
+        base = [int(f) for f in confirmed["frame_idxs"]]
+        add(video_id, base)
+        for seq in _shell_hedges(base):
+            if len(rows) >= max_rows:
+                break
+            add(video_id, seq)
         return rows
 
-    # mode == "unconfirmed": one greedy pass, sorted by confidence, skip
-    # any candidate whose hypothesis key was already placed. A duplicate
-    # hypothesis can never outscore what's already at that key (R@k only
-    # rewards the best row within a band), so it's never worth a slot --
-    # this single rule reproduces every row-band behavior the spec
-    # describes (1 / 2-5 / 6-20 / 21-50 / 51-100) without branching on row
-    # index; those bands are R@k eval checkpoints, not distinct code paths.
-    seen, rows = set(), []
+    # mode == "unconfirmed": resolve each shortlisted candidate's n's to
+    # frame_idx once, up front (skipping any candidate with an unmatched or
+    # otherwise unresolvable event -- no frame_idx to put in that column).
+    ranked = sorted(candidates, key=_confidence, reverse=True)
+    resolved = []
     for c in ranked:
-        if len(rows) >= max_rows:
-            break
         if not all(e.get("matched") for e in c["events"]):
             continue
-        key = c["video_id"]  # video-level hypothesis: wrong video scores 0 regardless of frame accuracy
-        if key in seen:
+        frame_idxs = [frame_idx_for_n(c["video_id"], e["n"]) for e in c["events"]]
+        if any(f is None for f in frame_idxs):
             continue
-        seen.add(key)
-        row, _ = row_and_key(c)
-        rows.append(row)
-    return rows
+        resolved.append((c["video_id"], frame_idxs))
 
+    # Top tier: one row per candidate video, its own proposed sequence, no
+    # hedging -- wrong video scores 0 regardless of frame precision, so
+    # this tier is pure distinct-hypothesis diversification.
+    for video_id, frame_idxs in resolved:
+        add(video_id, frame_idxs)
 
-def _hedge_rows_trake(confirmed: dict) -> list:
-    """TRAKE hedge rows: perturb one event's n at a time, holding the rest
-    at their confirmed value. Cycles events lowest-score-first within each
-    offset so the least-confident alignment gets hedged first."""
-    events = confirmed["events"]
-    video_id = confirmed["video_id"]
-    valid_ns = valid_ns_for_video(video_id)
-    base_ns = [int(e["n"]) for e in events]
-    order = sorted(range(len(events)), key=lambda i: events[i].get("score_val", 0.0))
-    rows = []
-    for off in HEDGE_OFFSETS:
-        for ev_i in order:
-            cand_n = base_ns[ev_i] + off
-            if cand_n not in valid_ns:
-                continue
-            new_ns = list(base_ns)
-            new_ns[ev_i] = cand_n
-            rows.append({"video_id": video_id, "ns": new_ns})
+    # Filler tier: shell-hedge each candidate's own sequence, video-by-
+    # video in the same confidence order, until the row budget is spent.
+    for video_id, frame_idxs in resolved:
+        if len(rows) >= max_rows:
+            break
+        for seq in _shell_hedges(frame_idxs):
+            if len(rows) >= max_rows:
+                break
+            add(video_id, seq)
+
     return rows
 
 
@@ -222,10 +246,10 @@ def rows_to_csv_text(query_type: str, rows: list, mode: str = "unconfirmed", ans
     for row in rows:
         video_id = row["video_id"]
         if query_type == "TRAKE":
-            frame_idxs = [frame_idx_for_n(video_id, n) for n in row["ns"]]
-            if any(f is None for f in frame_idxs):
-                continue  # unresolvable n -- drop rather than emit a malformed row
-            fields = [video_id, *(str(f) for f in frame_idxs)]
+            # Already native frame_idx by construction (_generate_export_trake
+            # resolves n -> frame_idx, or takes a human's frame_idx pick
+            # directly) -- no lookup needed here.
+            fields = [video_id, *(str(f) for f in row["frame_idxs"])]
         else:
             frame_idx = frame_idx_for_n(video_id, row["n"])
             if frame_idx is None:
