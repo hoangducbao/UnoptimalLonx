@@ -239,7 +239,7 @@ button {
 /* Export popup (frontend/js/export-dialog.js) */
 /* ---------------------------------------------------------------------- */
 
-.export-dialog input[type="text"] {
+.export-dialog input[type="text"], .export-dialog input[type="number"] {
     width: 100%;
     font-family: inherit;
     font-size: 0.9rem;
@@ -255,7 +255,7 @@ button {
     margin-bottom: 0.75rem;
 }
 .export-options .segmented { flex: none; }
-.export-options input[type="text"] { flex: 1; }
+.export-options input[type="text"], .export-options input[type="number"] { flex: 1; }
 
 .segmented { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .segmented button {
@@ -304,7 +304,7 @@ button {
 }
 .export-preview-section { flex: 1 1 320px; min-width: 0; }
 .export-preview-header { margin-bottom: 0.4rem; }
-.export-preview-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.5rem; }
+.export-preview-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; }
 .export-preview-grid .thumb-cell { position: relative; font-size: 0.72rem; }
 .export-preview-grid .thumb-caption { font-size: 0.72rem; }
 .export-add-btn {
@@ -325,6 +325,32 @@ button {
     cursor: pointer;
 }
 .export-add-btn.added { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.trake-event-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.trake-event-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.trake-event-row .thumb-wrap, .trake-event-row .thumb-missing { width: 70px; flex: none; }
+.trake-event-fields { flex: 1; }
+.trake-frame-input {
+    width: 100%;
+    margin-top: 0.25rem;
+    padding: 0.3rem 0.4rem;
+    font-family: inherit;
+    font-size: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.trake-candidate-row {
+    padding: 0.35rem 0;
+    font-size: 0.85rem;
+    border-bottom: 1px solid var(--border);
+}
 
 .export-actions {
     display: flex;
@@ -349,21 +375,26 @@ button {
 }
 
 .dialog-box {
+    position: relative;
     background: #fff;
     border-radius: 8px;
-    padding: 1.25rem 1.5rem;
+    padding: 0.65rem 1rem;
     width: 100%;
-    max-width: 640px;
+    max-width: 1100px;
     max-height: 85vh;
     overflow-y: auto;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
 }
-.dialog-box.wide { max-width: 900px; }
+.dialog-box.wide { max-width: 1100px; }
 
-.dialog-box h3 { margin-top: 0; }
+.dialog-box h3 { margin: 0 2rem 0.5rem 0; } /* right margin clears the close button, which no longer floats */
 
+/* Positioned (not floated) so it works the same whether or not a dialog
+   has a title -- the playback dialogs below have none. */
 .dialog-close {
-    float: right;
+    position: absolute;
+    top: 0.6rem;
+    right: 0.75rem;
     border: none;
     background: none;
     font-size: 1.2rem;
@@ -371,7 +402,29 @@ button {
     color: var(--text-muted);
 }
 
-.dialog-box video { width: 100%; border-radius: 4px; }
+/* Title-less playback dialogs (openPlaybackDialog/openTrakePlaybackDialog):
+   video on one side, video_id/frame/timer info beside it instead of above
+   and below -- keeps the dialog shorter so it fits without scrolling. */
+.playback-layout {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-start;
+    margin-top: 1.5rem; /* clears the absolutely-positioned close button, since there's no title to do that for us */
+}
+.playback-main { flex: 1 1 auto; min-width: 0; }
+.playback-info { flex: 0 0 220px; }
+.playback-info .thumb-caption { margin-bottom: 0.5rem; }
+.playback-timer { font-family: monospace; font-size: 0.9rem; margin-top: 0.5rem; }
+
+.dialog-box video {
+    display: block;
+    max-width: 100%;
+    max-height:75vh; /* bounds the video by height too, not just width -- otherwise a wide dialog scales it tall enough to push the timer/marker-bar/gaps info below the fold */
+    width: auto;
+    height: auto;
+    margin: 0 auto;
+    border-radius: 4px;
+}
 
 #trake-marker-bar {
     position: relative;
@@ -380,7 +433,6 @@ button {
     background: rgba(127, 127, 127, 0.15);
     border-radius: 4px;
 }
-#trake-timer { font-family: monospace; font-size: 0.9rem; }
 .trake-marker-tick {
     position: absolute; top: 0; bottom: 0;
     transform: translateX(-50%);

@@ -12,6 +12,11 @@ import {
 
 const root = document.getElementById("dialog-root");
 
+// `title` may be falsy (null/"") to omit the heading entirely -- used by
+// the playback dialogs, which put video_id/frame/timer info beside the
+// video instead of needing a heading above it. The close button is
+// absolutely positioned (not floated) specifically so it works the same
+// way whether or not a title/h3 is present.
 export function openDialog(title, bodyEl, { wide = false } = {}) {
     const overlay = document.createElement("div");
     overlay.className = "dialog-overlay";
@@ -23,10 +28,13 @@ export function openDialog(title, bodyEl, { wide = false } = {}) {
     closeBtn.onclick = () => overlay.remove();
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
-    const h3 = document.createElement("h3");
-    h3.textContent = title;
-
-    box.append(closeBtn, h3, bodyEl);
+    box.append(closeBtn);
+    if (title) {
+        const h3 = document.createElement("h3");
+        h3.textContent = title;
+        box.append(h3);
+    }
+    box.append(bodyEl);
     overlay.append(box);
     root.append(overlay);
     return { overlay, box };
@@ -79,10 +87,14 @@ function fmtTime(t) {
 
 export async function openPlaybackDialog(videoId, n) {
     const body = document.createElement("div");
-    body.innerHTML = `<div class="thumb-caption" style="margin-bottom:0.5rem;">${videoId} — frame ${n}</div>
-        <div id="playback-video-wrap">Loading…</div>
-        <div id="playback-timer" style="font-family:monospace;font-size:0.9rem;margin-top:6px;">--:-- · frame --</div>`;
-    const { box } = openDialog("Video playback", body);
+    body.innerHTML = `<div class="playback-layout">
+        <div class="playback-main" id="playback-video-wrap">Loading…</div>
+        <div class="playback-info">
+          <div class="thumb-caption">${videoId} — frame ${n}</div>
+          <div id="playback-timer" class="playback-timer">--:-- · frame --</div>
+        </div>
+      </div>`;
+    const { box } = openDialog(null, body);
 
     try {
         const data = await getPlayback(videoId, n);
@@ -200,12 +212,18 @@ export async function openTrakePlaybackDialog(videoId, events) {
     const gaps = events.filter((e) => !e.matched);
 
     const body = document.createElement("div");
-    body.innerHTML = `<div class="thumb-caption" style="margin-bottom:0.5rem;">${videoId}</div>
-        <div id="trake-video-wrap">Loading…</div>
-        <div id="trake-marker-bar"></div>
-        <div id="trake-timer">--:-- · frame --</div>
-        <div id="trake-gaps"></div>`;
-    const { box } = openDialog("Video playback", body, { wide: true });
+    body.innerHTML = `<div class="playback-layout">
+        <div class="playback-main">
+          <div id="trake-video-wrap">Loading…</div>
+          <div id="trake-marker-bar"></div>
+        </div>
+        <div class="playback-info">
+          <div class="thumb-caption">${videoId}</div>
+          <div id="trake-timer" class="playback-timer">--:-- · frame --</div>
+          <div id="trake-gaps"></div>
+        </div>
+      </div>`;
+    const { box } = openDialog(null, body, { wide: true });
 
     if (gaps.length) {
         const gapsEl = box.querySelector("#trake-gaps");
