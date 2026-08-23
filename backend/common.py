@@ -121,7 +121,18 @@ _map_keyframes_cache: dict = {}
 def load_map_keyframes(video_id: str):
     if video_id not in _map_keyframes_cache:
         path = config.MAP_KEYFRAMES_DIR / f"{video_id}.csv"
-        _map_keyframes_cache[video_id] = pd.read_csv(path) if path.exists() else None
+        if path.exists():
+            df = pd.read_csv(path)
+            # Defends against stray junk on the header row (seen on one file
+            # in the wild: a leading backtick turned "n" into "`n", which
+            # made every mk["n"] lookup below raise KeyError and 500 the
+            # whole request) -- normalize instead of trusting the header
+            # byte-for-byte, so a similarly mangled file degrades to working
+            # rather than crashing.
+            df.columns = [str(c).strip().strip("`") for c in df.columns]
+            _map_keyframes_cache[video_id] = df
+        else:
+            _map_keyframes_cache[video_id] = None
     return _map_keyframes_cache[video_id]
 
 
