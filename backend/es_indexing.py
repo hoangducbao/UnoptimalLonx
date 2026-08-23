@@ -58,7 +58,9 @@ def ensure_caption_fuzzy_index():
     }})
 
     def _docs():
-        for csv_path in sorted(config.CAPTIONING_DIR.glob("*_captions.csv")):
+        for csv_path in sorted(config.CAPTIONING_DIR.glob("*.csv")):  # was *_captions.csv before the rename
+            if csv_path.name == "manifest.csv":  # run manifest, not a per-video caption file -- different schema entirely
+                continue
             df = pd.read_csv(csv_path)
             for _, r in df.iterrows():
                 yield {

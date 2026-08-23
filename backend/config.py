@@ -22,11 +22,11 @@ SIGLIP2_MODEL_ID = "google/siglip2-base-patch16-384"
 FRAME_SIGLIP2_GLOB = "D:/University/Summ26/AICDataExtracted/siglib_embed/*.npy"
 FRAME_CLIP_GLOB = "D:/University/Summ26/AICData/clip-features-32/*.npy"
 
-ASR_EMBED_DIR = Path("D:/University/Summ26/AICDataExtracted/asr_embed")
+ASR_EMBED_DIR = Path("D:/University/Summ26/AICDataExtracted/transcript_embed")  # was asr_embed
 TRANSCRIPTS_DIR = Path("D:/University/Summ26/AICDataExtracted/transcripts")
 
-CAPTIONING_DIR = Path("D:/University/Summ26/AICDataExtracted/captioning")
-SIGLIP_CAPTION_DIR = Path("D:/University/Summ26/AICDataExtracted/siglip_caption")
+CAPTIONING_DIR = Path("D:/University/Summ26/AICDataExtracted/captions")  # was captioning
+SIGLIP_CAPTION_DIR = Path("D:/University/Summ26/AICDataExtracted/caption_embed")  # was siglip_caption
 
 OCR_DIR = Path("D:/University/Summ26/AICDataExtracted/ocr")
 

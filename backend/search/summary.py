@@ -27,7 +27,7 @@ def ensure_summary_embeddings():
     video that already has a .npy on disk)."""
     for txt_path in sorted(config.SUMMARY_DIR.glob("*.txt")):
         video_id = txt_path.stem
-        out_path = config.SUMMARY_EMBED_DIR / f"{video_id}_summary_siglip768.npy"
+        out_path = config.SUMMARY_EMBED_DIR / f"{video_id}.npy"
         if out_path.exists():
             continue
         text = txt_path.read_text(encoding="utf-8").strip()
@@ -42,7 +42,7 @@ def build_siglip_summary_index():
     global _index, _meta
     ensure_summary_embeddings()
     if not (config.SIGLIP_SUMMARY_FAISS.exists() and config.SIGLIP_SUMMARY_META.exists()):
-        npy_paths = sorted(config.SUMMARY_EMBED_DIR.glob("*_summary_siglip768.npy"))
+        npy_paths = sorted(config.SUMMARY_EMBED_DIR.glob("*.npy"))  # was *_summary_siglip768.npy before the rename
         index = faiss.IndexFlatIP(768)
         rows = []
         gid = 0

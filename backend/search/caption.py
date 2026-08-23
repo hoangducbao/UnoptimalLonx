@@ -23,13 +23,15 @@ _meta: pd.DataFrame = None
 def build_siglip_caption_index():
     global _index, _meta
     if not (config.SIGLIP_CAPTION_FAISS.exists() and config.SIGLIP_CAPTION_META.exists()):
-        npy_paths = sorted(config.SIGLIP_CAPTION_DIR.glob("*_caption_siglip768.npy"))
+        # caption_embed/{video_id}.npy + {video_id}.csv (was siglip_caption/
+        # {video_id}_caption_siglip768.npy + _frames.csv before the rename).
+        npy_paths = sorted(config.SIGLIP_CAPTION_DIR.glob("*.npy"))
         index = faiss.IndexFlatIP(768)
         rows = []
         gid = 0
         for npy_path in npy_paths:
             video_id = video_id_from_filename(str(npy_path), ("_caption_siglip768",))
-            frames_path = config.SIGLIP_CAPTION_DIR / f"{video_id}_caption_siglip768_frames.csv"
+            frames_path = config.SIGLIP_CAPTION_DIR / f"{video_id}.csv"
             if not frames_path.exists():
                 continue
             vecs = l2_normalize(np.load(npy_path))
