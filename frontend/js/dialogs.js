@@ -12,7 +12,7 @@ import {
 
 const root = document.getElementById("dialog-root");
 
-function openDialog(title, bodyEl, { wide = false } = {}) {
+export function openDialog(title, bodyEl, { wide = false } = {}) {
     const overlay = document.createElement("div");
     overlay.className = "dialog-overlay";
     const box = document.createElement("div");

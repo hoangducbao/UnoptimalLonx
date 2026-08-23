@@ -3,7 +3,7 @@
 // drilled-down result set isn't a plain ranked list.
 
 import { searchHierarchy, expandHierarchy } from "../api.js";
-import { refreshConfirmButtons, renderThumb, renderActions } from "../render.js";
+import { renderThumb, renderActions } from "../render.js";
 import { currentQuery } from "../query-input.js";
 import { hierExtraG, resetExportCandidates, scopeFilters } from "../state.js";
 
@@ -123,9 +123,9 @@ export async function run(resultsEl, statusEl) {
         return;
     }
     // Flatten to one candidate per video (its Step 1 top-1 frame, the same
-    // frame renderActions()'s confirm button targets below) -- Hierarchy's
-    // grouped/drilled-down shape isn't a plain ranked list, but export
-    // still needs one.
+    // frame renderActions()'s export (★) button targets below) -- Hierarchy's
+    // grouped/drilled-down shape isn't a plain ranked list, but the export
+    // popup's "similars" preview needs one.
     resetExportCandidates(data.groups.map((g) => ({
         video_id: g.video_id, n: g.step1_frames[0].n, rank: g.best_rank,
         score_label: g.score_label, score_val: g.best_score_val, text: null,
@@ -146,5 +146,4 @@ export async function run(resultsEl, statusEl) {
         resultsEl.append(groupEl);
         renderGroup(groupEl, g.video_id);
     }
-    refreshConfirmButtons();
 }

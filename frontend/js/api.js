@@ -37,6 +37,16 @@ export function getPlayback(videoId, n) {
     return jsonFetch(`/api/playback?${qs}`);
 }
 
+export function getExportFrame(videoId, n) {
+    const qs = new URLSearchParams({ video_id: videoId, n });
+    return jsonFetch(`/api/export/frame?${qs}`);
+}
+
+export function getExportNeighbors(videoId, n, count) {
+    const qs = new URLSearchParams({ video_id: videoId, n, count });
+    return jsonFetch(`/api/export/neighbors?${qs}`);
+}
+
 export async function uploadQueryImage(blob) {
     const form = new FormData();
     form.append("file", blob, "query.png");

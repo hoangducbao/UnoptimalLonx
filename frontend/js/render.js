@@ -6,18 +6,8 @@
 // original's "one render_grid() serves every signal" design.
 
 import { openNeighborsDialog, openPlaybackDialog } from "./dialogs.js";
-import { copyCollectionOnly, copyToScope, isConfirmedFlat, toggleConfirmedFlat } from "./state.js";
-
-// Every confirm-btn currently in the DOM shares this class -- toggling one
-// clears any other (exclusive single-select), so all of them need their
-// visual state resynced after a click, not just the one that was clicked.
-export function refreshConfirmButtons() {
-    document.querySelectorAll(".confirm-btn").forEach((btn) => {
-        const confirmed = isConfirmedFlat(btn.dataset.videoId, Number(btn.dataset.n));
-        btn.classList.toggle("confirmed", confirmed);
-        btn.title = confirmed ? "Confirmed as answer (click to unconfirm)" : "Confirm as answer";
-    });
-}
+import { openExportDialog } from "./export-dialog.js";
+import { copyCollectionOnly, copyToScope } from "./state.js";
 
 function videoLotStr(videoId) {
     const m = /^L(\d+)/i.exec(videoId);
@@ -80,16 +70,13 @@ export function renderActions(videoId, centerN, { collectionOnly = false } = {})
     copyBtn.textContent = "⧉";
     copyBtn.onclick = () => collectionOnly ? copyCollectionOnly(videoId) : copyToScope(videoId);
 
-    const confirmBtn = document.createElement("button");
-    confirmBtn.className = "icon-btn confirm-btn";
-    confirmBtn.dataset.videoId = videoId;
-    confirmBtn.dataset.n = centerN;
-    confirmBtn.textContent = "★";
-    confirmBtn.onclick = () => {
-        toggleConfirmedFlat(videoId, centerN);
-        refreshConfirmButtons();
-    };
-    row.append(moreBtn, playBtn, copyBtn, confirmBtn);
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "icon-btn";
+    exportBtn.title = "Export as AIC submission CSV";
+    exportBtn.textContent = "★";
+    exportBtn.onclick = () => openExportDialog({ kind: "flat", video_id: videoId, n: centerN });
+
+    row.append(moreBtn, playBtn, copyBtn, exportBtn);
     return row;
 }
 
@@ -113,7 +100,6 @@ export function renderGrid(container, results, groupMode = null) {
             grid.append(cell);
         }
         container.append(grid);
-        refreshConfirmButtons();
         return;
     }
 
@@ -147,5 +133,4 @@ export function renderGrid(container, results, groupMode = null) {
         hr.className = "divider";
         container.append(hr);
     }
-    refreshConfirmButtons();
 }

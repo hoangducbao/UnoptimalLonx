@@ -226,22 +226,7 @@ button {
     padding: 0;
 }
 .icon-btn:hover { background: var(--accent-soft); }
-.icon-btn.confirmed { background: var(--accent); border-color: var(--accent); color: #fff; }
-.icon-btn.confirmed:hover { filter: brightness(1.05); }
-
-.export-bar {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-}
-.export-bar input[type="text"] {
-    flex: 1;
-    font-family: inherit;
-    font-size: 0.9rem;
-    padding: 0.4rem 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-}
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .group-header {
     font-size: 0.9rem;
@@ -249,6 +234,104 @@ button {
 }
 
 .divider { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
+
+/* ---------------------------------------------------------------------- */
+/* Export popup (frontend/js/export-dialog.js) */
+/* ---------------------------------------------------------------------- */
+
+.export-dialog input[type="text"] {
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.9rem;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.export-options {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+.export-options .segmented { flex: none; }
+.export-options input[type="text"] { flex: 1; }
+
+.segmented { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.segmented button {
+    border: none;
+    background: #fff;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border-right: 1px solid var(--border);
+}
+.segmented button:last-child { border-right: none; }
+.segmented button.active { background: var(--accent); color: #fff; }
+
+.export-answer-area { margin: 0.75rem 0; }
+.export-answer-area input[type="text"] { margin-top: 0.5rem; }
+
+.export-answer-list { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.5rem; }
+.export-answer-card {
+    position: relative;
+    width: 110px;
+    font-size: 0.78rem;
+    padding: 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #fff;
+}
+.export-answer-card[draggable="true"] { cursor: grab; }
+.export-answer-card .export-remove-btn {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    /* .thumb-wrap carries z-index:1 unconditionally (style.css's "Result
+       cards" section), which -- with no z-index of its own -- would paint
+       above this sibling button despite coming first in the markup. */
+    z-index: 200;
+    width: 20px;
+    height: 20px;
+    font-size: 0.7rem;
+}
+
+.export-preview-area {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+}
+.export-preview-section { flex: 1 1 320px; min-width: 0; }
+.export-preview-header { margin-bottom: 0.4rem; }
+.export-preview-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.5rem; }
+.export-preview-grid .thumb-cell { position: relative; font-size: 0.72rem; }
+.export-preview-grid .thumb-caption { font-size: 0.72rem; }
+.export-add-btn {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    /* .thumb-wrap:hover jumps to z-index:100 for the hover-zoom effect
+       (style.css's "Result cards" section) -- stay above that or a click
+       on a hovered thumbnail's add button lands on the zoomed <img>
+       instead. */
+    z-index: 200;
+    width: 20px;
+    height: 20px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+}
+.export-add-btn.added { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.export-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1.25rem;
+}
 
 /* ---------------------------------------------------------------------- */
 /* Dialogs */

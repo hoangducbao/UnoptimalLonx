@@ -13,41 +13,17 @@ export const state = {
 
 // ---------------------------------------------------------------------------
 // Export (AIC submission CSV) -- tracks the current signal's last result
-// set plus (at most) one confirmed answer, feeding the export bar/button
-// in app.js. Reset on every new search -- a fresh result set invalidates
-// any prior confirm pick (see resetExportCandidates()).
+// set, which the export popup (export-dialog.js) reads as its "similars"
+// preview tier whenever a result card's ★ button opens it. Reset on every
+// new search -- a fresh result set invalidates the old one.
 // ---------------------------------------------------------------------------
 
 export const exportState = {
     candidates: [],  // last search's `results` (flat signals) or `candidates` (TRAKE), as-is
-    confirmed: null,  // {video_id, n} for flat signals, or the whole TRAKE candidate object; null = unconfirmed
 };
 
 export function resetExportCandidates(candidates) {
     exportState.candidates = candidates || [];
-    exportState.confirmed = null;
-}
-
-// Exclusive single-select: confirming a new key clears any prior pick;
-// confirming the already-confirmed key clears it instead (toggle off).
-export function toggleConfirmedFlat(videoId, n) {
-    const c = exportState.confirmed;
-    exportState.confirmed = (c && c.video_id === videoId && c.n === n) ? null : { video_id: videoId, n };
-}
-
-export function toggleConfirmedTrake(candidate) {
-    const c = exportState.confirmed;
-    exportState.confirmed = (c && c.video_id === candidate.video_id) ? null : candidate;
-}
-
-export function isConfirmedFlat(videoId, n) {
-    const c = exportState.confirmed;
-    return !!c && c.video_id === videoId && c.n === n && !c.events;
-}
-
-export function isConfirmedTrake(candidate) {
-    const c = exportState.confirmed;
-    return !!c && c.events && c.video_id === candidate.video_id;
 }
 
 // ---------------------------------------------------------------------------

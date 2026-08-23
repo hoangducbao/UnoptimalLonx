@@ -4,21 +4,8 @@
 
 import { searchTrake } from "../api.js";
 import { openTrakePlaybackDialog, openWeightsDialog } from "../dialogs.js";
-import {
-    copyToScope, isConfirmedTrake, mixedConfig, resetExportCandidates, scopeFilters,
-    toggleConfirmedTrake, trakeState, TRAKE_EVENT_SIGNALS,
-} from "../state.js";
-
-// Mirrors render.js's refreshConfirmButtons -- a separate class since a
-// TRAKE confirm targets a whole video+event-alignment candidate, not a
-// single {video_id, n} like every other signal's result cards.
-function refreshConfirmButtons() {
-    document.querySelectorAll(".confirm-btn-trake").forEach((btn) => {
-        const confirmed = isConfirmedTrake({ video_id: btn.dataset.videoId });
-        btn.classList.toggle("confirmed", confirmed);
-        btn.title = confirmed ? "Confirmed as answer (click to unconfirm)" : "Confirm as answer";
-    });
-}
+import { openExportDialog } from "../export-dialog.js";
+import { copyToScope, mixedConfig, resetExportCandidates, scopeFilters, trakeState, TRAKE_EVENT_SIGNALS } from "../state.js";
 
 const trakeSection = document.getElementById("trake-query-section");
 const standardSection = document.getElementById("standard-query-section");
@@ -170,15 +157,12 @@ function renderCandidate(container, c) {
     };
     container.append(playBtn);
 
-    const confirmBtn = document.createElement("button");
-    confirmBtn.className = "icon-btn confirm-btn-trake";
-    confirmBtn.dataset.videoId = c.video_id;
-    confirmBtn.textContent = "★";
-    confirmBtn.onclick = () => {
-        toggleConfirmedTrake(c);
-        refreshConfirmButtons();
-    };
-    container.append(confirmBtn);
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "icon-btn";
+    exportBtn.title = "Export as AIC submission CSV";
+    exportBtn.textContent = "★";
+    exportBtn.onclick = () => openExportDialog({ kind: "trake", candidate: c });
+    container.append(exportBtn);
 
     const hr = document.createElement("hr");
     hr.className = "divider";
@@ -227,5 +211,4 @@ export async function run(resultsEl, statusEl) {
     h.textContent = "TRAKE";
     resultsEl.append(h);
     for (const c of data.candidates) renderCandidate(resultsEl, c);
-    refreshConfirmButtons();
 }
