@@ -1,74 +1,89 @@
 # Routing101
 
-Multi-layer text-to-keyframe retrieval over the AIC video corpus (873
-videos / ~177k keyframes): keyframe embeddings, ASR-transcript embeddings,
-and frame-caption embeddings, each searchable standalone or fused with
-Reciprocal Rank Fusion (RRF). One combined Streamlit UI over all three
-layers. Everything is embedded/file-based (FAISS flat indices, on-disk
-caches) except the fuzzy-text legs, which use a local Elasticsearch.
+Multi-signal text-to-keyframe retrieval over the AIC video corpus (873
+videos / ~177k keyframes), plus an AIC-submission CSV export flow. Eight
+searchable signals — Keyframe, ASR, Caption, OCR, Summary, Mixed, TRAKE,
+Hierarchy — each embedded/file-based (FAISS flat indices) except the
+fuzzy-text legs, which use a local Elasticsearch. One FastAPI process
+serves both the JSON API and the static frontend.
 
 ## Layout
 
 ```
+backend/
+  config.py           paths + constants (data lives outside the repo, see Data below)
+  main.py             FastAPI app entry -- mounts routers + static frontend/media
+  common.py           shared helpers (result-shape contract, map-keyframes lookups)
+  models.py           SigLIP2 text/image tower, loaded once, shared across signals
+  export.py           AIC submission CSV row-generation logic (KIS/VQA/TRAKE)
+  es_client.py, es_indexing.py   Elasticsearch client + bulk-indexing for the fuzzy legs
+  search/             per-signal search + RRF (keyframe, asr, caption, ocr, summary, mixed, hierarchy, trake)
+  routes/             FastAPI endpoints on top of search/ (+ export, playback, neighbors, query_image)
+frontend/
+  index.html
+  js/                 app.js (signal switcher) + api.js, state.js, render.js, dialogs.js, export-dialog.js
+  js/signals/          one module per signal, same render/search shape
+  css/style.css
 pipeline/
-  config.py          paths + constants shared by the notebooks and the text encoders
-  clip_encoder.py     Multilingual-CLIP text tower, paired with CLIP ViT-B/32 image features
-ui/
-  app.py              combined Streamlit UI — all three layers below, one process
-index/                generated FAISS indices (git-ignored), reused across app runs
-routing101.ipynb        annotated walkthrough: keyframe embeddings (SigLIP2 / CLIP ViT-B/32 / RRF)
-routing101_asr.ipynb     annotated walkthrough: ASR-segment search + RRF, mapped to keyframes
-routing101_caption.ipynb annotated walkthrough: frame-caption search + RRF, mapped to keyframes
+  config.py           paths + constants shared by the text encoders
+  clip_encoder.py      Multilingual-CLIP text tower (paired with CLIP ViT-B/32 image features)
+index/                 generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
 ```
 
-## Layers
+## Signals
 
-| Layer | Legs kept | Text encoder(s) |
+| Signal | Legs | Notes |
 |---|---|---|
-| Keyframe | SigLIP2, CLIP ViT-B/32, RRF | SigLIP2 text tower, Multilingual-CLIP |
-| ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | SigLIP2 text tower |
-| Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | SigLIP2 text tower |
+| Keyframe | SigLIP2, CLIP ViT-B/32, RRF | frame embeddings |
+| ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | transcript segments mapped to nearest keyframe |
+| Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | one row per keyframe |
+| OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |
+| Summary | SigLIP2-summary, Elasticsearch fuzzy, RRF | video-level: one result per video |
+| Mixed | weighted RRF across Keyframe/ASR/Caption/OCR | per-signal on/off leg toggles + adjustable weights |
+| Hierarchy | SigLIP2 only | frame search grouped by video, drilled down per video |
+| TRAKE | reuses the other signals, one per event | ordered multi-event search: find videos where every event's best match occurs in order |
 
-The SigLIP2 and Multilingual-CLIP text towers are loaded once per process
-(`st.cache_resource`, keyed process-wide) and shared across all three
-layers — `ui/app.py` is meant to run as a single `streamlit run` process;
-running the old per-layer apps as separate processes each duplicated the
-~4GB of model weights and was the direct cause of paging-file exhaustion.
+Every leg normalizes to `{video_id, n, rank, score_label, score_val, text}`
+before it reaches the frontend, so one `renderGrid()` (+ neighbor/playback
+popups) serves every signal except Hierarchy and TRAKE, which render their
+own grouped/multi-event shapes.
 
-CLIP ViT-B/32 is Keyframe-only by current scope — the ASR/Caption layers
-dropped their CLIP legs (SigLIP2 + fuzzy + RRF only).
+## Export
 
-## Data
+Every result card's ★ button opens an export popup that generates a
+ranked, deduped CSV for one AIC query (`query-p2-<#>-<kis|qa|trake>.csv`,
+no header row) — confirmed mode (a picked answer + time/similarity-based
+hedge rows) or unconfirmed mode (curated/ranked candidates + hedges),
+capped at 100 rows per the R@k scoring model. See `backend/export.py`'s
+module docstring for the exact row-generation rules.
+
+## Data (external, not in this repo)
+
+All raw data/embeddings live outside the repo, under absolute paths
+hardcoded in `backend/config.py` (currently `D:/University/Summ26/AICData*`).
+Update those constants, not a config file, if the data moves.
 
 - `AICDataExtracted/siglib_embed/*.npy` — SigLIP2 frame embeddings (768-d)
-- `AICData/clip-features-32/{video_id}.npy` — CLIP ViT-B/32 frame embeddings
-  (512-d, float16 on disk)
-- `AICDataExtracted/asr_embed/*_asr_siglip768.npy` + `_frames.csv` —
-  SigLIP2 embeddings of ASR segments, one row per (segment × keyframe)
-- `AICDataExtracted/transcripts/*.csv` — raw ASR transcript segments, bulk
-  -indexed into Elasticsearch for the fuzzy leg
-- `AICDataExtracted/siglip_caption/*_caption_siglip768.npy` + `_frames.csv`
-  — SigLIP2 embeddings of frame captions (one row per keyframe)
-- `AICDataExtracted/captioning/*_captions.csv` — raw frame captions, bulk
-  -indexed into Elasticsearch for the fuzzy leg
-- `AICData/map-keyframes/{video_id}.csv` — per-frame timestamps, used to
-  resolve the ASR fuzzy leg's segment hits to a keyframe number
+- `AICData/clip-features-32/{video_id}.npy` — CLIP ViT-B/32 frame embeddings (512-d, float16)
+- `AICDataExtracted/transcript_embed/{video_id}.npy` + `.csv` — SigLIP2 embeddings of ASR segments (one row per segment × keyframe)
+- `AICDataExtracted/transcripts/{video_id}.csv` — raw ASR segments, bulk-indexed into ES for the fuzzy leg
+- `AICDataExtracted/caption_embed/{video_id}.npy` + `.csv` — SigLIP2 embeddings of frame captions (one row per keyframe)
+- `AICDataExtracted/captions/{video_id}.csv` — raw frame captions, bulk-indexed into ES
+- `AICDataExtracted/ocr/{video_id}.csv` — per-frame OCR text, bulk-indexed into ES (no embedding leg)
+- `AICDataExtracted/summaries/` + `summary_embed/` — one-paragraph video summaries (embedded on first use, cached)
+- `AICData/map-keyframes/{video_id}.csv` — per-frame timestamps + native `frame_idx`, resolves ASR/text hits to a keyframe number and backs the CSV export's `n -> frame_idx` translation
 - `AICData/keyframes/{video_id}/{n:03d}.jpg` — thumbnails
+- `AICData/video/{video_id}.mp4` — source video, used by the playback dialogs
 
-## UI
+## Run
 
 ```
-streamlit run ui/app.py
+uvicorn backend.main:app --reload
 ```
 
-Segmented control picks the layer (Keyframe / ASR / Caption); each layer
-has one checkbox per leg + RRF. Hover a result to see a 4x zoom preview.
-Click **Show more** on any result to open a popup with the ±7 neighboring
-frames (by frame number) from the same video.
-
-The fuzzy legs bulk-index their source CSVs into Elasticsearch on first
-use per process (cached, idempotent `_id` per doc) — no separate indexing
-step needed. Requires a local ES reachable at `http://localhost:9200`:
+Then open `http://localhost:8000/app/`. Elasticsearch is required for
+every fuzzy leg (ASR, Caption, OCR, Summary) — degrades to an empty result
+with an on-page warning if unreachable:
 
 ```
 docker run -d --name es -p 9200:9200 \
@@ -76,13 +91,18 @@ docker run -d --name es -p 9200:9200 \
     -e "xpack.security.enabled=false" \
     -e "xpack.ml.enabled=false" \
     -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" \
+    -v es-data:/usr/share/elasticsearch/data \
     docker.elastic.co/elasticsearch/elasticsearch:8.15.0
 ```
 
-The heap cap and disabled ML module keep ES's footprint small — this
-app's ES indices only hold short text rows for fuzzy matching (no vector
-data, that's all in FAISS), so ES's default auto-sized heap (up to ~50%
-of host RAM) is far more than needed.
+The `-v es-data:...` volume matters: without it, `docker rm`/recreate
+loses all four fuzzy indices and the next launch re-bulks everything from
+CSV. With the volume, `ensure_*_fuzzy_index()` in `backend/es_indexing.py`
+checks `es.indices.exists(...)` up front and only (re)indexes an index
+that doesn't exist yet — to force a rebuild after changing source data,
+delete that one index (e.g. `curl -X DELETE localhost:9200/caption_frames`)
+rather than the whole container/volume.
 
-If ES isn't reachable, the fuzzy leg degrades to an empty result (with an
-on-page warning) rather than breaking the other legs.
+No test suite, linter, or build step exists in this repo. See `CLAUDE.md`
+for architecture notes and conventions (result-shape contract, RRF fusion,
+index build order, etc.).

@@ -12,8 +12,6 @@ transformers>=4.57.0
 timm
 pillow
 
-streamlit>=1.30
-
 tqdm>=4.60
 
 # clip_vitb32 backend (pipeline/clip_encoder.py) -- Multilingual-CLIP's text
@@ -22,13 +20,13 @@ tqdm>=4.60
 # transitively but are pinned implicitly by these two.
 multilingual-clip==1.0.10
 
-# ASR / Caption fuzzy legs (ui/app.py) -- bulk-indexes transcript/caption
-# text into a local Elasticsearch and runs a fuzzy match query against it.
+# ASR / Caption fuzzy legs (backend/search/asr.py, caption.py) -- bulk-indexes
+# transcript/caption text into a local Elasticsearch and runs a fuzzy match
+# query against it.
 elasticsearch>=8.0.0
 
-# backend/ -- FastAPI rewrite of ui/app.py (see backend/main.py). streamlit
-# above stays too: ui/app.py is kept as a reference/fallback implementation,
-# see the rewrite plan's Decisions section 3.
+# backend/ -- FastAPI app (see backend/main.py) serving both the JSON API
+# and the static frontend/.
 fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
