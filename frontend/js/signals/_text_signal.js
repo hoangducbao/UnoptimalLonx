@@ -7,8 +7,14 @@
 
 import { renderGrid } from "../render.js";
 import { currentQuery } from "../query-input.js";
+import { resetExportCandidates, scopeFilters } from "../state.js";
 
 const LEG_KEYS = ["siglip", "fuzzy", "rrf"];
+// Export candidates come from the single "best" enabled leg, not every leg
+// rendered on screen -- RRF (fused) is preferred when enabled, since it's
+// the strongest ranking available, falling back to whichever plain leg is
+// on when RRF isn't.
+const EXPORT_LEG_PRIORITY = ["rrf", "siglip", "fuzzy"];
 
 export function makeTextSignalPanel({
     prefix, siglipLabel, fuzzyLabel, rrfLabel, searchFn, groupMode,
@@ -65,10 +71,7 @@ export function makeTextSignalPanel({
             query: image_id ? null : query,
             image_id,
             top_k: topK,
-            video_filter: document.getElementById("use-video-scope").checked
-                ? document.getElementById("video-filter").value : "",
-            lot_filter: document.getElementById("use-collection-scope").checked
-                ? document.getElementById("lot-filter").value : "",
+            ...scopeFilters(),
             legs: { siglip: use.siglip, fuzzy: use.fuzzy, rrf: use.rrf },
         };
 
@@ -83,6 +86,13 @@ export function makeTextSignalPanel({
         resultsEl.innerHTML = "";
 
         const dataKey = { siglip: "siglip", fuzzy: "fuzzy", rrf: "rrf" };
+        let exportLeg = null;
+        for (const key of EXPORT_LEG_PRIORITY) {
+            const leg = data[dataKey[key]];
+            if (use[key] && leg && !leg.skipped) { exportLeg = leg; break; }
+        }
+        resetExportCandidates(exportLeg ? exportLeg.results : []);
+
         for (const key of order) {
             if (use[key]) section(resultsEl, labels[key], data[dataKey[key]]);
         }

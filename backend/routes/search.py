@@ -50,6 +50,7 @@ class KeyframeSearchRequest(BaseModel):
     top_k: int = config.DISPLAY_N
     video_filter: str = ""
     lot_filter: str = ""
+    exclude_lot: bool = False
     legs: KeyframeLegs = KeyframeLegs()
 
 
@@ -64,7 +65,7 @@ def search_keyframe(body: KeyframeSearchRequest):
     query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
 
     siglip2_df = clip_df = None
@@ -108,6 +109,7 @@ class TextSignalSearchRequest(BaseModel):
     top_k: int = config.DISPLAY_N
     video_filter: str = ""
     lot_filter: str = ""
+    exclude_lot: bool = False
     legs: TextSignalLegs = TextSignalLegs()
 
 
@@ -122,7 +124,7 @@ def search_asr(body: TextSignalSearchRequest):
     query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
 
     siglip_df = fuzzy_df = None
@@ -152,7 +154,7 @@ def search_caption(body: TextSignalSearchRequest):
     query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
 
     siglip_df = fuzzy_df = None
@@ -182,7 +184,7 @@ def search_summary(body: TextSignalSearchRequest):
     query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
 
     siglip_df = fuzzy_df = None
@@ -217,6 +219,7 @@ class OcrSearchRequest(BaseModel):
     top_k: int = config.DISPLAY_N
     video_filter: str = ""
     lot_filter: str = ""
+    exclude_lot: bool = False
 
 
 class OcrSearchResponse(BaseModel):
@@ -232,7 +235,7 @@ def search_ocr(body: OcrSearchRequest):
 
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
 
     df, warning = ocr_mod.search_ocr_fuzzy(query, k=fetch_k)
     df = apply_filters(df, body.video_filter, lot_filter)
@@ -253,6 +256,7 @@ class MixedSearchRequest(BaseModel):
     top_k: int = config.DISPLAY_N
     video_filter: str = ""
     lot_filter: str = ""
+    exclude_lot: bool = False
     weights: Dict[str, int] = {}
     legs: Dict[str, bool] = {}
 
@@ -267,7 +271,7 @@ def search_mixed(body: MixedSearchRequest):
     query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
 
     signal_dfs = {}
     if body.weights.get("Keyframe", 0):

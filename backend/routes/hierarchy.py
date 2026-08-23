@@ -31,6 +31,7 @@ class HierarchySearchRequest(BaseModel):
     top_g: int = config.TOP_G_DEFAULT
     video_filter: str = ""
     lot_filter: str = ""
+    exclude_lot: bool = False
 
 
 class HierarchyGroup(BaseModel):
@@ -52,7 +53,7 @@ class HierarchySearchResponse(BaseModel):
 def search_hierarchy(body: HierarchySearchRequest):
     query = resolve_query(body.query, body.image_id)
     fetch_k = max(config.FETCH_K, body.top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
 
     raw_groups = hier_mod.base_search_grouped(query, fetch_k, body.video_filter, lot_filter, body.top_k)
 

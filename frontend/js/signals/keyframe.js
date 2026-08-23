@@ -5,6 +5,7 @@
 import { searchKeyframe } from "../api.js";
 import { renderGrid } from "../render.js";
 import { currentQuery } from "../query-input.js";
+import { resetExportCandidates, scopeFilters } from "../state.js";
 
 const controlsHtml = `
 <div class="checkbox-row">
@@ -50,10 +51,7 @@ export async function run(resultsEl, statusEl) {
         query: image_id ? null : query,
         image_id,
         top_k: topK,
-        video_filter: document.getElementById("use-video-scope").checked
-            ? document.getElementById("video-filter").value : "",
-        lot_filter: document.getElementById("use-collection-scope").checked
-            ? document.getElementById("lot-filter").value : "",
+        ...scopeFilters(),
         legs: { siglip2: useSiglip2, clip: useClip, rrf: useRrf },
     };
 
@@ -67,6 +65,14 @@ export async function run(resultsEl, statusEl) {
     }
     resultsEl.innerHTML = "";
     const gm = groupMode();
+
+    // Export candidates come from the "best" enabled leg: RRF (fused) if
+    // on, else whichever plain leg is -- same priority as _text_signal.js.
+    const exportLeg = (data.rrf && !data.rrf.skipped && useRrf) ? data.rrf
+        : (data.siglip2 && useSiglip2) ? data.siglip2
+        : (data.clip && !data.clip.skipped && useClip) ? data.clip
+        : null;
+    resetExportCandidates(exportLeg ? exportLeg.results : []);
 
     if (data.siglip2) {
         const h = document.createElement("h2");

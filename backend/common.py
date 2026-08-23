@@ -48,18 +48,23 @@ def l2_normalize(mat: np.ndarray) -> np.ndarray:
     return mat
 
 
-def parse_lot_range(text: str):
-    """'L21-L30' / 'L21' / '21-30' -> (lo, hi) lot numbers, or None if blank/unparsable."""
+def parse_lot_range(text: str, exclude: bool = False):
+    """'L21-L30' / 'L21' / '21-30' -> (lo, hi, exclude) lot range, or None if
+    blank/unparsable. `exclude` flips apply_filters from "keep only this
+    range" (the default) to "drop this range" -- the sidebar's "Exclude"
+    checkbox next to "Search in collection"."""
     text = (text or "").strip().upper()
     if not text:
         return None
     m = re.match(r"^L?(\d+)\s*-\s*L?(\d+)$", text)
     if m:
         lo, hi = int(m.group(1)), int(m.group(2))
-        return (lo, hi) if lo <= hi else (hi, lo)
+        lo, hi = (lo, hi) if lo <= hi else (hi, lo)
+        return (lo, hi, exclude)
     m = re.match(r"^L?(\d+)$", text)
     if m:
-        return int(m.group(1)), int(m.group(1))
+        n = int(m.group(1))
+        return (n, n, exclude)
     return None
 
 
@@ -74,9 +79,10 @@ def video_lot_str(video_id: str) -> str:
 
 
 def apply_filters(df: pd.DataFrame, video_filter: str, lot_range) -> pd.DataFrame:
-    """Restrict a leg's result df to a single video_id and/or a lot range,
-    applied right after search (before RRF/head truncation) so both single-leg
-    and RRF views respect the same filters."""
+    """Restrict a leg's result df to a single video_id and/or a lot range
+    (or, when that range's exclude flag is set, drop it instead of keeping
+    only it), applied right after search (before RRF/head truncation) so
+    both single-leg and RRF views respect the same filters."""
     if df is None or df.empty:
         return df
     out = df
@@ -84,9 +90,10 @@ def apply_filters(df: pd.DataFrame, video_filter: str, lot_range) -> pd.DataFram
     if video_filter:
         out = out[out["video_id"].astype(str).str.upper() == video_filter]
     if lot_range:
-        lo, hi = lot_range
+        lo, hi, exclude = lot_range
         lots = out["video_id"].map(video_lot_num)
-        out = out[lots.notna() & (lots >= lo) & (lots <= hi)]
+        in_range = lots.notna() & (lots >= lo) & (lots <= hi)
+        out = out[~in_range] if exclude else out[in_range]
     return out.reset_index(drop=True)
 
 
@@ -140,6 +147,30 @@ def keyframe_timestamp(video_id: str, n):
         return None, None
     row = hit.iloc[0]
     return float(row["pts_time"]), float(row["fps"])
+
+
+def frame_idx_for_n(video_id: str, n):
+    """n (1-indexed keyframe ordinal, the field every result carries) ->
+    frame_idx (raw video frame index) -- used by backend/export.py, since
+    AIC submission CSVs expect frame_idx, not n. Returns None if
+    unresolvable."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty or n is None or pd.isna(n):
+        return None
+    hit = mk.loc[mk["n"] == int(n)]
+    if hit.empty:
+        return None
+    return int(hit.iloc[0]["frame_idx"])
+
+
+def valid_ns_for_video(video_id: str) -> set:
+    """Every n that actually exists for video_id -- used by backend/export.py
+    to filter out-of-range hedge offsets (n-1, n+2, ...) before they'd
+    resolve to a nonexistent keyframe."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty:
+        return set()
+    return set(mk["n"].astype(int))
 
 
 # ---------------------------------------------------------------------------

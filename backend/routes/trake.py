@@ -32,6 +32,7 @@ class TrakeSearchRequest(BaseModel):
     top_v: int = 10
     video_filter: str = ""
     lot_filter: str = ""
+    exclude_lot: bool = False
     mixed_weights: Dict[str, int] = {}
     mixed_legs: Dict[str, bool] = {}
 
@@ -48,7 +49,7 @@ def search_trake(body: TrakeSearchRequest):
         return TrakeSearchResponse(message="Fill in every event's query text to search (minimum 1 event).")
 
     fetch_k = max(config.FETCH_K, body.top_k)
-    lot_filter = parse_lot_range(body.lot_filter)
+    lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     ctx_text = (body.context.text.strip() if body.context else "")
     ctx_signal = body.context.signal if body.context else "Summary"
 

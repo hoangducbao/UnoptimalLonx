@@ -226,6 +226,22 @@ button {
     padding: 0;
 }
 .icon-btn:hover { background: var(--accent-soft); }
+.icon-btn.confirmed { background: var(--accent); border-color: var(--accent); color: #fff; }
+.icon-btn.confirmed:hover { filter: brightness(1.05); }
+
+.export-bar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.export-bar input[type="text"] {
+    flex: 1;
+    font-family: inherit;
+    font-size: 0.9rem;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
 
 .group-header {
     font-size: 0.9rem;

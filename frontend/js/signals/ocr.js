@@ -4,6 +4,7 @@
 import { searchOcr } from "../api.js";
 import { renderGrid } from "../render.js";
 import { currentQuery } from "../query-input.js";
+import { resetExportCandidates, scopeFilters } from "../state.js";
 
 export function mount(controlsEl) {
     controlsEl.innerHTML = `<div class="thumb-caption muted">Single leg: fuzzy text search only, no embedding leg.</div>`;
@@ -27,10 +28,7 @@ export async function run(resultsEl, statusEl) {
         query: image_id ? null : query,
         image_id,
         top_k: topK,
-        video_filter: document.getElementById("use-video-scope").checked
-            ? document.getElementById("video-filter").value : "",
-        lot_filter: document.getElementById("use-collection-scope").checked
-            ? document.getElementById("lot-filter").value : "",
+        ...scopeFilters(),
     };
 
     resultsEl.innerHTML = `<div class="status-banner info">Searching…</div>`;
@@ -47,6 +45,7 @@ export async function run(resultsEl, statusEl) {
         resultsEl.innerHTML = `<div class="status-banner info">OCR is fuzzy text search only — not available for picture queries.</div>`;
         return;
     }
+    resetExportCandidates(data.fuzzy.results);
 
     const h = document.createElement("h2");
     h.textContent = "Fuzzy OCR";

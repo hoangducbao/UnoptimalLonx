@@ -12,6 +12,45 @@ export const state = {
 };
 
 // ---------------------------------------------------------------------------
+// Export (AIC submission CSV) -- tracks the current signal's last result
+// set plus (at most) one confirmed answer, feeding the export bar/button
+// in app.js. Reset on every new search -- a fresh result set invalidates
+// any prior confirm pick (see resetExportCandidates()).
+// ---------------------------------------------------------------------------
+
+export const exportState = {
+    candidates: [],  // last search's `results` (flat signals) or `candidates` (TRAKE), as-is
+    confirmed: null,  // {video_id, n} for flat signals, or the whole TRAKE candidate object; null = unconfirmed
+};
+
+export function resetExportCandidates(candidates) {
+    exportState.candidates = candidates || [];
+    exportState.confirmed = null;
+}
+
+// Exclusive single-select: confirming a new key clears any prior pick;
+// confirming the already-confirmed key clears it instead (toggle off).
+export function toggleConfirmedFlat(videoId, n) {
+    const c = exportState.confirmed;
+    exportState.confirmed = (c && c.video_id === videoId && c.n === n) ? null : { video_id: videoId, n };
+}
+
+export function toggleConfirmedTrake(candidate) {
+    const c = exportState.confirmed;
+    exportState.confirmed = (c && c.video_id === candidate.video_id) ? null : candidate;
+}
+
+export function isConfirmedFlat(videoId, n) {
+    const c = exportState.confirmed;
+    return !!c && c.video_id === videoId && c.n === n && !c.events;
+}
+
+export function isConfirmedTrake(candidate) {
+    const c = exportState.confirmed;
+    return !!c && c.events && c.video_id === candidate.video_id;
+}
+
+// ---------------------------------------------------------------------------
 // Mixed mode config -- ui/app.py:1252-1267. ONE shared config, read/written
 // from standalone Mixed mode AND every TRAKE row set to "Mixed" (a later
 // phase) -- same single-global-dict coupling as the original, see the
@@ -84,6 +123,20 @@ export function getNeighborExtra(videoId, centerN) {
         state.neighborExtra.set(key, { before: 0, after: 0 });
     }
     return state.neighborExtra.get(key);
+}
+
+// Reads the sidebar's video/collection scope controls into a request-body
+// fragment -- shared by every signal's search-body builder so the
+// "Exclude" checkbox (drop the collection range instead of restricting to
+// it) only has to be wired up here, not independently in six signal files.
+export function scopeFilters() {
+    return {
+        video_filter: document.getElementById("use-video-scope").checked
+            ? document.getElementById("video-filter").value : "",
+        lot_filter: document.getElementById("use-collection-scope").checked
+            ? document.getElementById("lot-filter").value : "",
+        exclude_lot: document.getElementById("exclude-collection-scope").checked,
+    };
 }
 
 // Mirrors ui/app.py's copy_to_scope/copy_collection_only (ui/app.py:233-242):

@@ -4,7 +4,8 @@
 // dispatch. Only Keyframe is wired in Phase 1 -- later phases register
 // more entries in SIGNALS and enable their sidebar buttons.
 
-import { state } from "./state.js";
+import { exportCsv } from "./api.js";
+import { exportState, resetExportCandidates, state } from "./state.js";
 import { setOnSubmit } from "./query-input.js";
 import * as keyframe from "./signals/keyframe.js";
 import * as asr from "./signals/asr.js";
@@ -48,6 +49,12 @@ function selectSignal(name) {
         btn.classList.toggle("active", btn.dataset.signal === name);
     });
     SIGNALS[name].mount(controlsEl);
+    // A new signal's results are unrelated to whatever was confirmed/queued
+    // for export under the old one -- clear immediately rather than
+    // waiting for the next search to land (some run()s return early
+    // without searching, e.g. an empty query box).
+    resetExportCandidates([]);
+    document.getElementById("export-answer").style.display = name === "TRAKE" ? "none" : "";
     runCurrentSearch();
 }
 
@@ -61,7 +68,7 @@ document.querySelectorAll(".signal-btn").forEach((btn) => {
 // these listeners at all, so there's no wasted-recompute problem to guard
 // against here in the first place).
 ["top-k", "top-v", "top-g", "video-filter", "use-video-scope", "lot-filter", "use-collection-scope",
- "group-by-video", "show-full-text"].forEach((id) => {
+ "exclude-collection-scope", "group-by-video", "show-full-text"].forEach((id) => {
     document.getElementById(id).addEventListener("change", runCurrentSearch);
 });
 
@@ -73,5 +80,27 @@ setOnSubmit(runCurrentSearch);
 // Delegate signal-control checkbox changes (leg toggles etc., re-created
 // per signal by mount()) up through the container.
 controlsEl.addEventListener("change", runCurrentSearch);
+
+const exportAnswerEl = document.getElementById("export-answer");
+document.getElementById("export-btn").addEventListener("click", async () => {
+    const answer = exportAnswerEl.value.trim();
+    if (!exportState.candidates.length) {
+        statusEl.innerHTML = `<div class="status-banner info">Nothing to export -- run a search first.</div>`;
+        return;
+    }
+    const queryType = state.signal === "TRAKE" ? "TRAKE" : (answer ? "VQA" : "KIS");
+    const body = {
+        query_type: queryType,
+        mode: exportState.confirmed ? "confirmed" : "unconfirmed",
+        candidates: exportState.candidates,
+        confirmed: exportState.confirmed,
+        answer,
+    };
+    try {
+        await exportCsv(body);
+    } catch (e) {
+        statusEl.innerHTML = `<div class="status-banner error">${e.message}</div>`;
+    }
+});
 
 selectSignal("Keyframe");

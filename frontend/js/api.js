@@ -42,3 +42,29 @@ export async function uploadQueryImage(blob) {
     form.append("file", blob, "query.png");
     return jsonFetch("/api/query-image", { method: "POST", body: form });
 }
+
+// Export returns CSV text, not JSON, so it can't go through jsonFetch --
+// fetch it as a blob and trigger a browser download via a throwaway <a>.
+export async function exportCsv(body) {
+    const res = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const match = /filename="?([^"]+)"?/.exec(res.headers.get("Content-Disposition") || "");
+    const filename = match ? match[1] : "export.csv";
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}

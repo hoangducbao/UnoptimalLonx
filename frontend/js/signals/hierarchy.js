@@ -3,9 +3,9 @@
 // drilled-down result set isn't a plain ranked list.
 
 import { searchHierarchy, expandHierarchy } from "../api.js";
-import { renderThumb, renderActions } from "../render.js";
+import { refreshConfirmButtons, renderThumb, renderActions } from "../render.js";
 import { currentQuery } from "../query-input.js";
-import { hierExtraG } from "../state.js";
+import { hierExtraG, resetExportCandidates, scopeFilters } from "../state.js";
 
 const topGWrap = document.getElementById("top-g-wrap");
 const groupByRow = document.getElementById("group-by-row");
@@ -26,15 +26,6 @@ export function mount(controlsEl) {
 export function unmount() {
     topGWrap.style.display = "none";
     groupByRow.style.display = "flex";
-}
-
-function scopeBody() {
-    return {
-        video_filter: document.getElementById("use-video-scope").checked
-            ? document.getElementById("video-filter").value : "",
-        lot_filter: document.getElementById("use-collection-scope").checked
-            ? document.getElementById("lot-filter").value : "",
-    };
 }
 
 async function renderGroupFrames(vid, container) {
@@ -115,7 +106,7 @@ export async function run(resultsEl, statusEl) {
 
     const topK = parseInt(document.getElementById("top-k").value, 10) || 30;
     const topG = parseInt(document.getElementById("top-g").value, 10) || 5;
-    const body = { query: image_id ? null : query, image_id, top_k: topK, top_g: topG, ...scopeBody() };
+    const body = { query: image_id ? null : query, image_id, top_k: topK, top_g: topG, ...scopeFilters() };
 
     resultsEl.innerHTML = `<div class="status-banner info">Searching…</div>`;
     let data;
@@ -131,6 +122,14 @@ export async function run(resultsEl, statusEl) {
         resultsEl.innerHTML = `<div class="status-banner info">No results.</div>`;
         return;
     }
+    // Flatten to one candidate per video (its Step 1 top-1 frame, the same
+    // frame renderActions()'s confirm button targets below) -- Hierarchy's
+    // grouped/drilled-down shape isn't a plain ranked list, but export
+    // still needs one.
+    resetExportCandidates(data.groups.map((g) => ({
+        video_id: g.video_id, n: g.step1_frames[0].n, rank: g.best_rank,
+        score_label: g.score_label, score_val: g.best_score_val, text: null,
+    })));
 
     groupsCache = new Map();
     const h = document.createElement("h2");
@@ -147,4 +146,5 @@ export async function run(resultsEl, statusEl) {
         resultsEl.append(groupEl);
         renderGroup(groupEl, g.video_id);
     }
+    refreshConfirmButtons();
 }

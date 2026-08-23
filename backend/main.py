@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config
 from .es_indexing import ensure_all_fuzzy_indices
 from .models import DEVICE, load_siglip2
-from .routes import hierarchy, neighbors, playback, query_image, search, trake
+from .routes import export, hierarchy, neighbors, playback, query_image, search, trake
 from .search import asr as asr_mod
 from .search import caption as cap_mod
 from .search import keyframe as kf
@@ -63,6 +63,7 @@ app.include_router(playback.router)
 app.include_router(query_image.router)
 app.include_router(trake.router)
 app.include_router(hierarchy.router)
+app.include_router(export.router)
 
 # Media: served directly from the existing AICData* directories, no copying.
 app.mount("/media/keyframes", StaticFiles(directory=config.THUMBNAIL_ROOT), name="keyframes")

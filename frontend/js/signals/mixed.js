@@ -7,7 +7,7 @@ import { searchMixed } from "../api.js";
 import { renderGrid } from "../render.js";
 import { currentQuery } from "../query-input.js";
 import { openWeightsDialog } from "../dialogs.js";
-import { mixedConfig } from "../state.js";
+import { mixedConfig, resetExportCandidates, scopeFilters } from "../state.js";
 
 let controlsElRef = null;
 let runRef = () => {};
@@ -50,10 +50,7 @@ export async function run(resultsEl, statusEl) {
         query: image_id ? null : query,
         image_id,
         top_k: topK,
-        video_filter: document.getElementById("use-video-scope").checked
-            ? document.getElementById("video-filter").value : "",
-        lot_filter: document.getElementById("use-collection-scope").checked
-            ? document.getElementById("lot-filter").value : "",
+        ...scopeFilters(),
         weights: mixedConfig.weights,
         legs: mixedConfig.legs,
     };
@@ -72,6 +69,7 @@ export async function run(resultsEl, statusEl) {
         resultsEl.innerHTML = `<div class="status-banner info">Every signal weight is 0 — open <b>Change weights</b> and enable at least one.</div>`;
         return;
     }
+    resetExportCandidates(data.results);
 
     const h = document.createElement("h2");
     h.textContent = "Mixed (weighted RRF)";
