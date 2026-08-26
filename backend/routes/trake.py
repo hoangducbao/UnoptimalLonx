@@ -33,6 +33,8 @@ class TrakeSearchRequest(BaseModel):
     video_filter: str = ""
     lot_filter: str = ""
     exclude_lot: bool = False
+    facet_field: str = ""
+    facet_value: str = ""
     mixed_weights: Dict[str, int] = {}
     mixed_legs: Dict[str, bool] = {}
 
@@ -57,6 +59,7 @@ def search_trake(body: TrakeSearchRequest):
         return trake_mod.trake_search_event(
             text, signal, fetch_k, body.video_filter, lot_filter,
             mixed_weights=body.mixed_weights, mixed_legs=body.mixed_legs,
+            facet_field=body.facet_field, facet_value=body.facet_value,
         )
 
     all_dfs, labels = [], []

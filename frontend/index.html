@@ -60,6 +60,25 @@
 
     <div class="scope-row">
       <div>
+        <label for="od-filter" title="Comma-separated object classes required in the frame, e.g. &quot;car, dog&quot; — fuzzy-matched against the OD vocabulary, applied as an AND filter after ranking.">Object filter</label>
+        <input type="text" id="od-filter" placeholder="e.g. car, dog, red car">
+      </div>
+    </div>
+
+    <div class="scope-row">
+      <div>
+        <label for="facet-field" title="Filter to videos tagged with one value of a structured field extracted from that lot's metadata (backend/metadata_filter.py) — e.g. only Toán exam-prep videos, or only Cà Mau travel episodes.">Metadata filter</label>
+        <select id="facet-field">
+          <option value="">(none)</option>
+        </select>
+        <select id="facet-value" disabled>
+          <option value="">— pick a field first —</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="scope-row">
+      <div>
         <label for="top-k">Top-K</label>
         <input type="number" id="top-k" value="30" min="1" max="200" step="5">
       </div>

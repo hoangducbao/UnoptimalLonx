@@ -74,36 +74,29 @@ export async function run(resultsEl, statusEl) {
         : null;
     resetExportCandidates(exportLeg ? exportLeg.results : []);
 
-    if (data.siglip2) {
-        const h = document.createElement("h2");
-        h.textContent = "SigLIP2";
-        resultsEl.append(h);
-        const box = document.createElement("div");
-        resultsEl.append(box);
-        renderGrid(box, data.siglip2.results, gm);
+    section(resultsEl, "SigLIP2", data.siglip2, gm);
+    section(resultsEl, "CLIP", data.clip, gm);
+    section(resultsEl, "RRF", data.rrf, gm);
+}
+
+function section(resultsEl, title, leg, gm) {
+    if (!leg) return;
+    const h = document.createElement("h2");
+    h.textContent = title;
+    resultsEl.append(h);
+    const box = document.createElement("div");
+    resultsEl.append(box);
+    if (leg.skipped) {
+        box.innerHTML = `<div class="status-banner info">${leg.skipped}</div>`;
+        return;
     }
-    if (data.clip) {
-        const h = document.createElement("h2");
-        h.textContent = "CLIP";
-        resultsEl.append(h);
-        const box = document.createElement("div");
-        resultsEl.append(box);
-        if (data.clip.skipped) {
-            box.innerHTML = `<div class="status-banner info">${data.clip.skipped}</div>`;
-        } else {
-            renderGrid(box, data.clip.results, gm);
-        }
-    }
-    if (data.rrf) {
-        const h = document.createElement("h2");
-        h.textContent = "RRF";
-        resultsEl.append(h);
-        const box = document.createElement("div");
-        resultsEl.append(box);
-        if (data.rrf.skipped) {
-            box.innerHTML = `<div class="status-banner info">${data.rrf.skipped}</div>`;
-        } else {
-            renderGrid(box, data.rrf.results, gm);
-        }
+    // renderGrid() does container.innerHTML = "" first -- render before
+    // appending the warning, or it gets wiped out with everything else.
+    renderGrid(box, leg.results, gm);
+    if (leg.warning) {
+        const warn = document.createElement("div");
+        warn.className = "status-banner warn";
+        warn.textContent = leg.warning;
+        box.prepend(warn);
     }
 }

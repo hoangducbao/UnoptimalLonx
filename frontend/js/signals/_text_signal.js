@@ -42,13 +42,16 @@ export function makeTextSignalPanel({
             box.innerHTML = `<div class="status-banner info">${leg.skipped}</div>`;
             return;
         }
+        // renderGrid() does container.innerHTML = "" first -- render the
+        // grid before appending the warning, not after, or the warning gets
+        // wiped out along with everything else already in `box`.
+        renderGrid(box, leg.results, groupMode());
         if (leg.warning) {
             const warn = document.createElement("div");
             warn.className = "status-banner warn";
             warn.textContent = leg.warning;
-            box.append(warn);
+            box.prepend(warn);
         }
-        renderGrid(box, leg.results, groupMode());
     }
 
     async function run(resultsEl, statusEl) {

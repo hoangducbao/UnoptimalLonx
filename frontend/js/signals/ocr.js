@@ -52,11 +52,13 @@ export async function run(resultsEl, statusEl) {
     resultsEl.append(h);
     const box = document.createElement("div");
     resultsEl.append(box);
+    // renderGrid() does container.innerHTML = "" first -- render before
+    // appending the warning, or it gets wiped out with everything else.
+    renderGrid(box, data.fuzzy.results, groupMode());
     if (data.fuzzy.warning) {
         const warn = document.createElement("div");
         warn.className = "status-banner warn";
         warn.textContent = data.fuzzy.warning;
-        box.append(warn);
+        box.prepend(warn);
     }
-    renderGrid(box, data.fuzzy.results, groupMode());
 }

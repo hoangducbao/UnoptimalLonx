@@ -112,6 +112,10 @@ export function scopeFilters() {
         lot_filter: document.getElementById("use-collection-scope").checked
             ? document.getElementById("lot-filter").value : "",
         exclude_lot: document.getElementById("exclude-collection-scope").checked,
+        od_filter: document.getElementById("od-filter").value,
+        facet_field: document.getElementById("facet-field").value,
+        facet_value: document.getElementById("facet-field").value
+            ? document.getElementById("facet-value").value : "",
     };
 }
 

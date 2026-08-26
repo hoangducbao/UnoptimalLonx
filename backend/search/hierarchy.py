@@ -19,6 +19,7 @@ import pandas as pd
 from PIL import Image
 
 from .. import config
+from .. import metadata_filter as md
 from ..common import apply_filters, df_to_results, thumbnail_disk_path
 from . import keyframe as kf
 
@@ -73,12 +74,21 @@ def hierarchy_expand_group(video_id: str, frames: list, top_g: int, fetch_k: int
     return frames + extra_results
 
 
-def base_search_grouped(query, fetch_k, video_filter, lot_filter, top_k):
+def base_search_grouped(query, fetch_k, video_filter, lot_filter, top_k, facet_field="", facet_value=""):
     """Step 1: SigLIP2 frame search, grouped by video_id in first-occurrence
     (= best rank) order -- same grouping render_grid's group_mode="video"
     does, hand-rolled here since Hierarchy needs the per-group list for
-    steps 2-3, not just a flat rendered grid (ui/app.py:2114-2130)."""
+    steps 2-3, not just a flat rendered grid (ui/app.py:2114-2130).
+
+    The metadata facet filter (subject/province) is applied here, at Step 1,
+    same tier as video_filter/lot_filter -- video-level scoping, unlike
+    od_filter's per-frame content filter, which Hierarchy doesn't use at
+    all. Step 3's drill-down (hierarchy_expand_group) doesn't need it
+    re-applied: it's already scoped to one video_id that passed this
+    filter, so every frame it finds necessarily belongs to that same
+    already-matching video."""
     base_df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), video_filter, lot_filter)
+    base_df = md.apply_facet_filter(base_df, facet_field, facet_value)
     if base_df is None or base_df.empty:
         return []
     base_results = df_to_results(base_df.head(top_k), "score")

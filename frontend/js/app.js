@@ -6,6 +6,7 @@
 
 import { resetExportCandidates, state } from "./state.js";
 import { setOnSubmit } from "./query-input.js";
+import { initFacets } from "./facets.js";
 import * as keyframe from "./signals/keyframe.js";
 import * as asr from "./signals/asr.js";
 import * as caption from "./signals/caption.js";
@@ -66,9 +67,13 @@ document.querySelectorAll(".signal-btn").forEach((btn) => {
 // these listeners at all, so there's no wasted-recompute problem to guard
 // against here in the first place).
 ["top-k", "top-v", "top-g", "video-filter", "use-video-scope", "lot-filter", "use-collection-scope",
- "exclude-collection-scope", "group-by-video", "show-full-text"].forEach((id) => {
+ "exclude-collection-scope", "group-by-video", "show-full-text", "facet-value"].forEach((id) => {
     document.getElementById(id).addEventListener("change", runCurrentSearch);
 });
+// facet-field is wired by initFacets() below instead of the generic list
+// above: switching field must reset facet-value's options *before*
+// runCurrentSearch reads it, and that ordering can't be guaranteed across
+// two independently-registered "change" listeners.
 
 document.getElementById("video-filter").addEventListener("input", () => {}); // no live-search on keystroke; Enter/blur via change above
 document.getElementById("clear-image-query").addEventListener("click", runCurrentSearch);
@@ -80,3 +85,4 @@ setOnSubmit(runCurrentSearch);
 controlsEl.addEventListener("change", runCurrentSearch);
 
 selectSignal("Keyframe");
+initFacets(runCurrentSearch);

@@ -30,6 +30,13 @@ SIGLIP_CAPTION_DIR = Path("D:/University/Summ26/AICDataExtracted/caption_embed")
 
 OCR_DIR = Path("D:/University/Summ26/AICDataExtracted/ocr")
 
+# OD (object-detection) text filter (backend/od_filter.py) -- per-video
+# filtered-detections CSVs produced upstream by AICPreprocess/filter_apply.py
+# (outside this repo) plus the offline class vocabulary built from them by
+# pipeline/build_class_vocab.py.
+FILTERED_OBJECT_DIR = Path("D:/University/Summ26/AICDataExtracted/filtered_object")
+CLASS_VOCAB_CSV = FILTERED_OBJECT_DIR / "class_vocab.csv"
+
 SUMMARY_DIR = Path("D:/University/Summ26/AICDataExtracted/summaries")
 SUMMARY_EMBED_DIR = Path("D:/University/Summ26/AICDataExtracted/summary_embed")
 SUMMARY_EMBED_DIR.mkdir(parents=True, exist_ok=True)
@@ -40,6 +47,7 @@ VIDEO_DIR = Path("D:/University/Summ26/AICData/video")  # TRAKE playback dialog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INDEX_DIR = REPO_ROOT / "index"
+PIPELINE_DIR = REPO_ROOT / "pipeline"  # rule/LLM-extracted per-lot metadata CSVs (backend/metadata_filter.py)
 ASR_INDEX_DIR = INDEX_DIR / "routing101_asr"
 CAPTION_INDEX_DIR = INDEX_DIR / "routing101_caption"
 SUMMARY_INDEX_DIR = INDEX_DIR / "routing101_summary"

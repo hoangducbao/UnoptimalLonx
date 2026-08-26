@@ -32,6 +32,8 @@ class HierarchySearchRequest(BaseModel):
     video_filter: str = ""
     lot_filter: str = ""
     exclude_lot: bool = False
+    facet_field: str = ""
+    facet_value: str = ""
 
 
 class HierarchyGroup(BaseModel):
@@ -55,7 +57,8 @@ def search_hierarchy(body: HierarchySearchRequest):
     fetch_k = max(config.FETCH_K, body.top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
 
-    raw_groups = hier_mod.base_search_grouped(query, fetch_k, body.video_filter, lot_filter, body.top_k)
+    raw_groups = hier_mod.base_search_grouped(
+        query, fetch_k, body.video_filter, lot_filter, body.top_k, body.facet_field, body.facet_value)
 
     groups = []
     for g in raw_groups:

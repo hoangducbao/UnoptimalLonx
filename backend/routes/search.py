@@ -13,6 +13,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from .. import config
+from .. import metadata_filter as md
+from .. import od_filter as od
 from ..common import apply_filters, df_to_results, parse_lot_range
 from ..models import is_image_query
 from ..search import asr as asr_mod
@@ -51,6 +53,9 @@ class KeyframeSearchRequest(BaseModel):
     video_filter: str = ""
     lot_filter: str = ""
     exclude_lot: bool = False
+    od_filter: str = ""
+    facet_field: str = ""
+    facet_value: str = ""
     legs: KeyframeLegs = KeyframeLegs()
 
 
@@ -67,27 +72,34 @@ def search_keyframe(body: KeyframeSearchRequest):
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
+    od_matched, od_unmatched = od.match_classes(body.od_filter)
+    od_warning = od.unmatched_warning(od_unmatched)
 
     siglip2_df = clip_df = None
     if body.legs.siglip2 or body.legs.rrf:
         siglip2_df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), body.video_filter, lot_filter)
+        siglip2_df = md.apply_facet_filter(siglip2_df, body.facet_field, body.facet_value)
     if body.legs.clip or body.legs.rrf:
         clip_df = apply_filters(kf.search_clip_frame(query, k=fetch_k), body.video_filter, lot_filter)
+        clip_df = md.apply_facet_filter(clip_df, body.facet_field, body.facet_value)
 
     resp = KeyframeSearchResponse()
     if body.legs.siglip2:
-        resp.siglip2 = LegResult(results=df_to_results(siglip2_df.head(top_k), "score"))
+        filtered = od.apply_od_filter(siglip2_df, od_matched)
+        resp.siglip2 = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
     if body.legs.clip:
         if image_query:
             resp.clip = LegResult(skipped="Skipped — picture queries are SigLIP2-only.")
         else:
-            resp.clip = LegResult(results=df_to_results(clip_df.head(top_k), "score"))
+            filtered = od.apply_od_filter(clip_df, od_matched)
+            resp.clip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
     if body.legs.rrf:
         if image_query:
             resp.rrf = LegResult(skipped=_SKIP_NOTHING_TO_FUSE)
         else:
-            fused = kf.rrf_fuse_frame([siglip2_df, clip_df], top_n=top_k)
-            resp.rrf = LegResult(results=df_to_results(fused, "rrf_score"))
+            fused = kf.rrf_fuse_frame([siglip2_df, clip_df], top_n=fetch_k)
+            fused = od.apply_od_filter(fused, od_matched)
+            resp.rrf = LegResult(warning=od_warning, results=df_to_results(fused.head(top_k), "rrf_score"))
     return resp
 
 
@@ -110,6 +122,9 @@ class TextSignalSearchRequest(BaseModel):
     video_filter: str = ""
     lot_filter: str = ""
     exclude_lot: bool = False
+    od_filter: str = ""  # applied by ASR/Caption; ignored by Summary (video-level, no per-frame OD)
+    facet_field: str = ""
+    facet_value: str = ""
     legs: TextSignalLegs = TextSignalLegs()
 
 
@@ -126,26 +141,33 @@ def search_asr(body: TextSignalSearchRequest):
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
+    od_matched, od_unmatched = od.match_classes(body.od_filter)
+    od_warning = od.unmatched_warning(od_unmatched)
 
     siglip_df = fuzzy_df = None
     fuzzy_warning = None
     if body.legs.siglip or body.legs.rrf:
         siglip_df = apply_filters(asr_mod.search_siglip_asr(query, k=fetch_k), body.video_filter, lot_filter)
+        siglip_df = md.apply_facet_filter(siglip_df, body.facet_field, body.facet_value)
     if body.legs.fuzzy or body.legs.rrf:
         fuzzy_df, fuzzy_warning = asr_mod.search_asr_fuzzy(query, k=fetch_k)
         fuzzy_df = apply_filters(fuzzy_df, body.video_filter, lot_filter)
+        fuzzy_df = md.apply_facet_filter(fuzzy_df, body.facet_field, body.facet_value)
 
     resp = TextSignalSearchResponse()
     if body.legs.siglip:
-        resp.siglip = LegResult(results=df_to_results(asr_mod.attach_keyframe_asr(siglip_df).head(top_k), "score", "text"))
+        filtered = od.apply_od_filter(asr_mod.attach_keyframe_asr(siglip_df), od_matched)
+        resp.siglip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
     if body.legs.fuzzy:
-        resp.fuzzy = LegResult(warning=fuzzy_warning, results=df_to_results(asr_mod.attach_keyframe_asr(fuzzy_df).head(top_k), "score", "text"))
+        filtered = od.apply_od_filter(asr_mod.attach_keyframe_asr(fuzzy_df), od_matched)
+        resp.fuzzy = LegResult(warning=fuzzy_warning or od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
     if body.legs.rrf:
         if image_query:
             resp.rrf = LegResult(skipped=_SKIP_NOTHING_TO_FUSE)
         else:
-            fused = asr_mod.attach_keyframe_asr(asr_mod.rrf_fuse_asr({"siglip_asr": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
-            resp.rrf = LegResult(results=df_to_results(fused, "rrf_score", "text"))
+            fused = asr_mod.attach_keyframe_asr(asr_mod.rrf_fuse_asr({"siglip_asr": siglip_df, "fuzzy": fuzzy_df}, top_n=fetch_k))
+            fused = od.apply_od_filter(fused, od_matched)
+            resp.rrf = LegResult(warning=od_warning, results=df_to_results(fused.head(top_k), "rrf_score", "text"))
     return resp
 
 
@@ -156,26 +178,33 @@ def search_caption(body: TextSignalSearchRequest):
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
+    od_matched, od_unmatched = od.match_classes(body.od_filter)
+    od_warning = od.unmatched_warning(od_unmatched)
 
     siglip_df = fuzzy_df = None
     fuzzy_warning = None
     if body.legs.siglip or body.legs.rrf:
         siglip_df = apply_filters(cap_mod.search_siglip_caption(query, k=fetch_k), body.video_filter, lot_filter)
+        siglip_df = md.apply_facet_filter(siglip_df, body.facet_field, body.facet_value)
     if body.legs.fuzzy or body.legs.rrf:
         fuzzy_df, fuzzy_warning = cap_mod.search_caption_fuzzy(query, k=fetch_k)
         fuzzy_df = apply_filters(fuzzy_df, body.video_filter, lot_filter)
+        fuzzy_df = md.apply_facet_filter(fuzzy_df, body.facet_field, body.facet_value)
 
     resp = TextSignalSearchResponse()
     if body.legs.siglip:
-        resp.siglip = LegResult(results=df_to_results(cap_mod.attach_keyframe_caption(siglip_df).head(top_k), "score", "text"))
+        filtered = od.apply_od_filter(cap_mod.attach_keyframe_caption(siglip_df), od_matched)
+        resp.siglip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
     if body.legs.fuzzy:
-        resp.fuzzy = LegResult(warning=fuzzy_warning, results=df_to_results(cap_mod.attach_keyframe_caption(fuzzy_df).head(top_k), "score", "text"))
+        filtered = od.apply_od_filter(cap_mod.attach_keyframe_caption(fuzzy_df), od_matched)
+        resp.fuzzy = LegResult(warning=fuzzy_warning or od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
     if body.legs.rrf:
         if image_query:
             resp.rrf = LegResult(skipped=_SKIP_NOTHING_TO_FUSE)
         else:
-            fused = cap_mod.attach_keyframe_caption(cap_mod.rrf_fuse_caption({"siglip_caption": siglip_df, "fuzzy": fuzzy_df}, top_n=top_k))
-            resp.rrf = LegResult(results=df_to_results(fused, "rrf_score", "text"))
+            fused = cap_mod.attach_keyframe_caption(cap_mod.rrf_fuse_caption({"siglip_caption": siglip_df, "fuzzy": fuzzy_df}, top_n=fetch_k))
+            fused = od.apply_od_filter(fused, od_matched)
+            resp.rrf = LegResult(warning=od_warning, results=df_to_results(fused.head(top_k), "rrf_score", "text"))
     return resp
 
 
@@ -191,9 +220,11 @@ def search_summary(body: TextSignalSearchRequest):
     fuzzy_warning = None
     if body.legs.siglip or body.legs.rrf:
         siglip_df = apply_filters(sum_mod.search_siglip_summary(query, k=fetch_k), body.video_filter, lot_filter)
+        siglip_df = md.apply_facet_filter(siglip_df, body.facet_field, body.facet_value)
     if body.legs.fuzzy or body.legs.rrf:
         fuzzy_df, fuzzy_warning = sum_mod.search_summary_fuzzy(query, k=fetch_k)
         fuzzy_df = apply_filters(fuzzy_df, body.video_filter, lot_filter)
+        fuzzy_df = md.apply_facet_filter(fuzzy_df, body.facet_field, body.facet_value)
 
     resp = TextSignalSearchResponse()
     if body.legs.siglip:
@@ -220,6 +251,9 @@ class OcrSearchRequest(BaseModel):
     video_filter: str = ""
     lot_filter: str = ""
     exclude_lot: bool = False
+    od_filter: str = ""
+    facet_field: str = ""
+    facet_value: str = ""
 
 
 class OcrSearchResponse(BaseModel):
@@ -236,11 +270,15 @@ def search_ocr(body: OcrSearchRequest):
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
+    od_matched, od_unmatched = od.match_classes(body.od_filter)
+    od_warning = od.unmatched_warning(od_unmatched)
 
     df, warning = ocr_mod.search_ocr_fuzzy(query, k=fetch_k)
     df = apply_filters(df, body.video_filter, lot_filter)
-    results = df_to_results(ocr_mod.attach_keyframe_ocr(df).head(top_k), "score", "text")
-    return OcrSearchResponse(fuzzy=LegResult(warning=warning, results=results))
+    df = md.apply_facet_filter(df, body.facet_field, body.facet_value)
+    filtered = od.apply_od_filter(ocr_mod.attach_keyframe_ocr(df), od_matched)
+    results = df_to_results(filtered.head(top_k), "score", "text")
+    return OcrSearchResponse(fuzzy=LegResult(warning=warning or od_warning, results=results))
 
 
 # ---------------------------------------------------------------------------
@@ -257,12 +295,16 @@ class MixedSearchRequest(BaseModel):
     video_filter: str = ""
     lot_filter: str = ""
     exclude_lot: bool = False
+    od_filter: str = ""
+    facet_field: str = ""
+    facet_value: str = ""
     weights: Dict[str, int] = {}
     legs: Dict[str, bool] = {}
 
 
 class MixedSearchResponse(BaseModel):
     empty: bool = False
+    warning: Optional[str] = None
     results: list = []
 
 
@@ -272,6 +314,8 @@ def search_mixed(body: MixedSearchRequest):
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
+    od_matched, od_unmatched = od.match_classes(body.od_filter)
+    od_warning = od.unmatched_warning(od_unmatched)
 
     signal_dfs = {}
     if body.weights.get("Keyframe", 0):
@@ -286,5 +330,10 @@ def search_mixed(body: MixedSearchRequest):
     if not signal_dfs:
         return MixedSearchResponse(empty=True)
 
-    fused = mixed_mod.rrf_fuse_weighted(signal_dfs, body.weights, top_n=top_k)
-    return MixedSearchResponse(results=df_to_results(fused, "rrf_score"))
+    # RRF-fuse at fetch_k (not top_k) so the OD filter -- a *post*-RRF
+    # step -- still has a real candidate pool to narrow before truncation,
+    # same reasoning as every per-signal route above.
+    fused = mixed_mod.rrf_fuse_weighted(signal_dfs, body.weights, top_n=fetch_k)
+    fused = md.apply_facet_filter(fused, body.facet_field, body.facet_value)
+    fused = od.apply_od_filter(fused, od_matched)
+    return MixedSearchResponse(warning=od_warning, results=df_to_results(fused.head(top_k), "rrf_score"))
