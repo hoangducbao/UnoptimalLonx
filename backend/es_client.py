@@ -19,6 +19,7 @@ def get_es_client(force_new: bool = False):
             request_timeout=5,
             verify_certs=False,
             ssl_show_warn=False,
+            meta_header=False,
         )
     return _client
 
