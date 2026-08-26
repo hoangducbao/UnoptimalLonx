@@ -103,6 +103,14 @@ that doesn't exist yet — to force a rebuild after changing source data,
 delete that one index (e.g. `curl -X DELETE localhost:9200/caption_frames`)
 rather than the whole container/volume.
 
+## Run on Kaggle
+
+To run the complete pipeline and web UI on Kaggle with `nguyenthanghuu/aic2026-dataset`:
+1. Upload [kaggle_routing101.ipynb](file:///d:/StudioProjects/Routing101/kaggle_routing101.ipynb) to a new Kaggle Notebook.
+2. Select **Accelerator: GPU T4 x2** and turn **Internet: ON**.
+3. Attach dataset `nguyenthanghuu/aic2026-dataset`.
+4. Run all cells in sequence — Cloudflare Tunnel will print a public HTTPS link to access the web app.
+
 No test suite, linter, or build step exists in this repo. See `CLAUDE.md`
 for architecture notes and conventions (result-shape contract, RRF fusion,
 index build order, etc.).

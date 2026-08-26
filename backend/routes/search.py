@@ -86,13 +86,13 @@ def search_keyframe(body: KeyframeSearchRequest):
     resp = KeyframeSearchResponse()
     if body.legs.siglip2:
         filtered = od.apply_od_filter(siglip2_df, od_matched)
-        resp.siglip2 = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
+        resp.siglip2 = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k) if filtered is not None else None, "score"))
     if body.legs.clip:
         if image_query:
             resp.clip = LegResult(skipped="Skipped — picture queries are SigLIP2-only.")
         else:
             filtered = od.apply_od_filter(clip_df, od_matched)
-            resp.clip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
+            resp.clip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k) if filtered is not None else None, "score"))
     if body.legs.rrf:
         if image_query:
             resp.rrf = LegResult(skipped=_SKIP_NOTHING_TO_FUSE)

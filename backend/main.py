@@ -13,6 +13,7 @@ Then open http://localhost:8000/app/
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import config
@@ -48,14 +49,25 @@ async def lifespan(app: FastAPI):
     print("[startup] Summary — embeddings + SigLIP2 index")
     sum_mod.build_siglip_summary_index()
 
-    print("[startup] ASR/Caption/OCR/Summary — Elasticsearch")
-    ensure_all_fuzzy_indices()
+    try:
+        print("[startup] ASR/Caption/OCR/Summary — Elasticsearch")
+        ensure_all_fuzzy_indices()
+    except Exception as e:
+        print(f"[startup] Elasticsearch warning: {e}")
 
     print("[startup] all signals ready")
     yield
 
 
 app = FastAPI(title="Routing101 by MiLF", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(search.router)
 app.include_router(facets.router)
@@ -67,6 +79,8 @@ app.include_router(hierarchy.router)
 app.include_router(export.router)
 
 # Media: served directly from the existing AICData* directories, no copying.
+config.THUMBNAIL_ROOT.mkdir(parents=True, exist_ok=True)
+config.VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media/keyframes", StaticFiles(directory=config.THUMBNAIL_ROOT), name="keyframes")
 app.mount("/media/video", StaticFiles(directory=config.VIDEO_DIR), name="video")
 

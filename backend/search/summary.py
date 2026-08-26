@@ -77,16 +77,20 @@ def search_siglip_summary(query, k: int = config.FETCH_K) -> pd.DataFrame:
     if cache_key in _siglip_cache:
         return _siglip_cache[cache_key]
     index, meta = _get_index()
+    if index.ntotal == 0 or meta.empty:
+        return pd.DataFrame(columns=["rank", "score", "video_id", "text", "n"])
     qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
     n = min(k, index.ntotal)
     scores, ids = index.search(qvec, n)
     rows = []
     for rank, (gid, score) in enumerate(zip(ids[0], scores[0]), start=1):
-        if gid == -1:
+        if gid == -1 or gid >= len(meta):
             continue
         row = meta.iloc[int(gid)]
         rows.append({"rank": rank, "score": float(score), "video_id": row["video_id"], "text": row["text"]})
     result = pd.DataFrame(rows)
+    # Summary is video-level -- resolve n=1 so df_to_results can produce a valid thumbnail
+    result["n"] = 1
     _siglip_cache[cache_key] = result
     return result
 

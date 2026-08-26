@@ -27,7 +27,12 @@ _FRAME_INDICES: dict = {}
 def build_frame_index(glob_pattern: str):
     npy_paths = sorted(glob_mod.glob(glob_pattern))
     if not npy_paths:
-        raise FileNotFoundError(f"no .npy files matched: {glob_pattern}")
+        print(f"[Keyframe Warning] No .npy files matched: {glob_pattern}. Initializing empty index.")
+        dim = 768 if "siglip" in glob_pattern.lower() else 512
+        index = faiss.IndexFlatIP(dim)
+        result = (index, pd.DataFrame(columns=["video_id", "frame_id"]))
+        _FRAME_INDICES[glob_pattern] = result
+        return result
 
     all_vecs = []
     lookup_rows = []
@@ -55,11 +60,17 @@ def _get_frame_index(glob_pattern: str):
 
 
 def _search_frame(index, lookup_df, qvec: np.ndarray, k: int) -> pd.DataFrame:
+    if index.ntotal == 0 or lookup_df.empty:
+        return pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "n"])
     q = l2_normalize(qvec.reshape(1, -1))
     n = min(k, index.ntotal)
     scores, ids = index.search(q, n)
-    results = lookup_df.iloc[ids[0]].copy().reset_index(drop=True)
-    results["score"] = scores[0]
+    valid_mask = (ids[0] >= 0) & (ids[0] < len(lookup_df))
+    valid_ids = ids[0][valid_mask]
+    if len(valid_ids) == 0:
+        return pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "n"])
+    results = lookup_df.iloc[valid_ids].copy().reset_index(drop=True)
+    results["score"] = scores[0][valid_mask]
     results["rank"] = np.arange(1, len(results) + 1)
     results["n"] = results["frame_id"] + 1
     return results[["rank", "score", "video_id", "frame_id", "n"]]
@@ -82,16 +93,19 @@ def search_siglip2_frame(query, k: int = config.FETCH_K) -> pd.DataFrame:
 
 def search_clip_frame(query, k: int = config.FETCH_K) -> pd.DataFrame:
     if is_image_query(query):
-        # Picture queries are SigLIP2-only -- CLIP ViT-B/32 here is the
-        # Multilingual-CLIP *text* tower's paired space, no image tower
-        # wired up for it, so this leg contributes nothing to an image query.
         return pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "n"])
     cache_key = (query_hash(query), k)
     if cache_key in _clip_cache:
         return _clip_cache[cache_key]
     index, lookup_df = _get_frame_index(config.FRAME_CLIP_GLOB)
-    qvec = clip_encoder.encode_text([query])[0]
-    result = _search_frame(index, lookup_df, qvec, k)
+    if index.ntotal == 0 or lookup_df.empty:
+        return pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "n"])
+    try:
+        qvec = clip_encoder.encode_text([query])[0]
+        result = _search_frame(index, lookup_df, qvec, k)
+    except Exception as e:
+        print(f"[CLIP Warning] {e}")
+        result = pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "n"])
     _clip_cache[cache_key] = result
     return result
 

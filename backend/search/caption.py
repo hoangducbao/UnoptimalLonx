@@ -30,17 +30,24 @@ def build_siglip_caption_index():
         rows = []
         gid = 0
         for npy_path in npy_paths:
-            video_id = video_id_from_filename(str(npy_path), ("_caption_siglip768",))
+            video_id = video_id_from_filename(str(npy_path), ("_caption_siglip768", "_siglip768"))
             frames_path = config.SIGLIP_CAPTION_DIR / f"{video_id}.csv"
             if not frames_path.exists():
-                continue
+                candidates = [
+                    config.SIGLIP_CAPTION_DIR / f"{video_id}_caption_siglip768_frames.csv",
+                    config.SIGLIP_CAPTION_DIR / f"{video_id}_frames.csv",
+                ] + list(config.SIGLIP_CAPTION_DIR.glob(f"{video_id}*.csv"))
+                found = [c for c in candidates if c.exists()]
+                if not found:
+                    continue
+                frames_path = found[0]
             vecs = l2_normalize(np.load(npy_path))
             frames = pd.read_csv(frames_path)
             if len(frames) != vecs.shape[0]:
                 continue
             index.add(vecs)
             for _, r in frames.iterrows():
-                rows.append((gid, video_id, int(r["frame_id"]), r["text"]))
+                rows.append((gid, video_id, int(r["frame_id"]), r.get("text", "")))
                 gid += 1
         faiss.write_index(index, str(config.SIGLIP_CAPTION_FAISS))
         pd.DataFrame(rows, columns=["global_id", "video_id", "frame_id", "text"]).to_csv(config.SIGLIP_CAPTION_META, index=False)
@@ -64,12 +71,14 @@ def search_siglip_caption(query, k: int = config.FETCH_K) -> pd.DataFrame:
     if cache_key in _siglip_cache:
         return _siglip_cache[cache_key]
     index, meta = _get_index()
+    if index.ntotal == 0 or meta.empty:
+        return pd.DataFrame(columns=["rank", "score", "video_id", "frame_id", "text"])
     qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
     n = min(k, index.ntotal)
     scores, ids = index.search(qvec, n)
     rows = []
     for rank, (gid, score) in enumerate(zip(ids[0], scores[0]), start=1):
-        if gid == -1:
+        if gid == -1 or gid >= len(meta):
             continue
         row = meta.iloc[int(gid)]
         rows.append({"rank": rank, "score": float(score), "video_id": row["video_id"],

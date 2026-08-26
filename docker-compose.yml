@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: routing101-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.ml.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cat/health | grep -q green || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional backend container if running under Docker
+  # Note: Can also run natively with `uvicorn backend.main:app --reload` on host machine
+  # backend:
+  #   build: .
+  #   container_name: routing101-backend
+  #   environment:
+  #     - DATASET_MODE=ADL
+  #     - ADL_RAW_DIR=/data/ADLData
+  #     - ADL_EXTRACTED_DIR=/data/ADLDataExtracted
+  #     - ES_HOST=http://elasticsearch:9200
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - ./D/ADLData:/data/ADLData
+  #     - ./D/ADLDataExtracted:/data/ADLDataExtracted
+  #   depends_on:
+  #     - elasticsearch
+
+volumes:
+  es-data:
+    driver: local

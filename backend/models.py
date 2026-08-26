@@ -12,7 +12,23 @@ from PIL import Image
 
 from . import config
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+def _select_device() -> str:
+    if torch.cuda.is_available():
+        try:
+            cap = torch.cuda.get_device_capability()
+            if cap[0] >= 7:
+                # sm_70+ (T4, V100, RTX series, A100, etc.)
+                torch.zeros(1, device="cuda")
+                return "cuda"
+            else:
+                print(f"[Device Warning] GPU compute capability {cap[0]}.{cap[1]} < 7.0 (e.g. Tesla P100). Falling back to CPU.")
+                return "cpu"
+        except Exception as e:
+            print(f"[Device Warning] CUDA initialization check failed ({e}). Falling back to CPU.")
+            return "cpu"
+    return "cpu"
+
+DEVICE = _select_device()
 
 _siglip2 = None  # (model, processor), set by load_siglip2()
 

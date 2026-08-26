@@ -11,46 +11,111 @@ paths). Update these constants, not a config file, if the data moves.
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 FETCH_K = 100      # candidates pulled per leg, gives RRF a real pool to fuse
 DISPLAY_N = 30
 RRF_K = 60
 NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id
 TOP_G_DEFAULT = 5   # Hierarchy Search: frames kept per video after drill-down (Top-G)
 
-SIGLIP2_MODEL_ID = "google/siglip2-base-patch16-384"
+DATASET_MODE = os.getenv("DATASET_MODE", "AIC").upper()  # "AIC" or "ADL"
 
-FRAME_SIGLIP2_GLOB = "D:/University/Summ26/AICDataExtracted/siglib_embed/*.npy"
-FRAME_CLIP_GLOB = "D:/University/Summ26/AICData/clip-features-32/*.npy"
+SIGLIP2_MODEL_ID = os.getenv("SIGLIP2_MODEL_ID", "google/siglip2-base-patch16-384")
 
-ASR_EMBED_DIR = Path("D:/University/Summ26/AICDataExtracted/transcript_embed")  # was asr_embed
-TRANSCRIPTS_DIR = Path("D:/University/Summ26/AICDataExtracted/transcripts")
+if Path("D:/hf_cache").exists():
+    os.environ.setdefault("HF_HOME", "D:/hf_cache")
+    os.environ.setdefault("TORCH_HOME", "D:/hf_cache/torch")
 
-CAPTIONING_DIR = Path("D:/University/Summ26/AICDataExtracted/captions")  # was captioning
-SIGLIP_CAPTION_DIR = Path("D:/University/Summ26/AICDataExtracted/caption_embed")  # was siglip_caption
+IS_KAGGLE = Path("/kaggle").exists()
 
-OCR_DIR = Path("D:/University/Summ26/AICDataExtracted/ocr")
+def _find_dir(names: list, fallback: str) -> Path:
+    if IS_KAGGLE:
+        input_root = Path("/kaggle/input")
+        if input_root.exists():
+            for root, dirs, _ in os.walk(input_root):
+                rpath = Path(root)
+                if rpath.name.lower() in [n.lower() for n in names]:
+                    return rpath
+                dirs[:] = [d for d in dirs if not d.startswith(("L0", "L1", "L2", "v_"))]
+    return Path(fallback)
 
 # OD (object-detection) text filter (backend/od_filter.py) -- per-video
 # filtered-detections CSVs produced upstream by AICPreprocess/filter_apply.py
 # (outside this repo) plus the offline class vocabulary built from them by
 # pipeline/build_class_vocab.py.
-FILTERED_OBJECT_DIR = Path("D:/University/Summ26/AICDataExtracted/filtered_object")
-CLASS_VOCAB_CSV = FILTERED_OBJECT_DIR / "class_vocab.csv"
+od_dir = _find_dir(["filtered_object", "filtered_objects", "objects", "object_detection"], "D:/University/Summ26/AICDataExtracted/filtered_object")
+FILTERED_OBJECT_DIR = Path(os.getenv("FILTERED_OBJECT_DIR", str(od_dir)))
+CLASS_VOCAB_CSV = Path(os.getenv("CLASS_VOCAB_CSV", str(FILTERED_OBJECT_DIR / "class_vocab.csv")))
 
-SUMMARY_DIR = Path("D:/University/Summ26/AICDataExtracted/summaries")
-SUMMARY_EMBED_DIR = Path("D:/University/Summ26/AICDataExtracted/summary_embed")
-SUMMARY_EMBED_DIR.mkdir(parents=True, exist_ok=True)
+if DATASET_MODE == "ADL":
+    ADL_RAW_DIR = Path(os.getenv("ADL_RAW_DIR", "D:/ADLData"))
+    ADL_EXTRACTED_DIR = Path(os.getenv("ADL_EXTRACTED_DIR", "D:/ADLDataExtracted"))
 
-MAP_KEYFRAMES_DIR = Path("D:/University/Summ26/AICData/map-keyframes")
-THUMBNAIL_ROOT = Path("D:/University/Summ26/AICData/keyframes")
-VIDEO_DIR = Path("D:/University/Summ26/AICData/video")  # TRAKE playback dialog
+    FRAME_SIGLIP2_GLOB = str(ADL_EXTRACTED_DIR / "siglib_embed" / "*.npy")
+    FRAME_CLIP_GLOB = str(ADL_RAW_DIR / "clip-features-32" / "*.npy")
+
+    ASR_EMBED_DIR = ADL_EXTRACTED_DIR / "transcript_embed"
+    TRANSCRIPTS_DIR = ADL_EXTRACTED_DIR / "transcripts"
+
+    CAPTIONING_DIR = ADL_EXTRACTED_DIR / "captions"
+    SIGLIP_CAPTION_DIR = ADL_EXTRACTED_DIR / "caption_embed"
+
+    OCR_DIR = ADL_EXTRACTED_DIR / "ocr"
+
+    SUMMARY_DIR = ADL_EXTRACTED_DIR / "summaries"
+    SUMMARY_EMBED_DIR = ADL_EXTRACTED_DIR / "summary_embed"
+
+    MAP_KEYFRAMES_DIR = ADL_RAW_DIR / "map-keyframes"
+    THUMBNAIL_ROOT = ADL_RAW_DIR / "keyframes"
+    VIDEO_DIR = ADL_RAW_DIR / "video"
+
+    INDEX_PREFIX = "adl"
+else:
+    # Default AIC dataset
+    siglip_dir = _find_dir(["siglib_embed", "siglip_embed", "siglip2_embed"], "D:/vids/AICDataExtracted/siglib_embed")
+    if not siglip_dir.exists() and Path("D:/University/Summ26/AICDataExtracted/siglib_embed").exists():
+        siglip_dir = Path("D:/University/Summ26/AICDataExtracted/siglib_embed")
+    FRAME_SIGLIP2_GLOB = os.getenv("FRAME_SIGLIP2_GLOB", str(siglip_dir / "*.npy"))
+
+    clip_dir = _find_dir(["clip-features-32", "clip_features_32"], "D:/vids/clip-features-32")
+    if not clip_dir.exists() and Path("D:/University/Summ26/AICData/clip-features-32").exists():
+        clip_dir = Path("D:/University/Summ26/AICData/clip-features-32")
+    FRAME_CLIP_GLOB = os.getenv("FRAME_CLIP_GLOB", str(clip_dir / "*.npy"))
+
+    ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(["asr_embed", "transcript_embed", "transcripts_embed"], "D:/vids/AICDataExtracted/asr_embed"))))
+    TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", str(_find_dir(["transcripts", "transcript"], "D:/vids/transcripts_l25_results"))))
+
+    CAPTIONING_DIR = Path(os.getenv("CAPTIONING_DIR", str(_find_dir(["captioning", "captions", "caption"], "D:/vids/AICDataExtracted/captioning"))))
+    SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_find_dir(["siglip_caption", "caption_embed", "captions_embed"], "D:/vids/AICDataExtracted/siglip_caption"))))
+
+    OCR_DIR = Path(os.getenv("OCR_DIR", str(_find_dir(["ocr"], "D:/vids/AICDataExtracted/ocr"))))
+
+    SUMMARY_DIR = Path(os.getenv("SUMMARY_DIR", str(_find_dir(["summaries", "summary"], "D:/vids/AICDataExtracted/summaries"))))
+    SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_find_dir(["summary_embed", "summaries_embed"], "/kaggle/working/summary_embed" if IS_KAGGLE else "D:/vids/AICDataExtracted/summary_embed"))))
+
+    MAP_KEYFRAMES_DIR = Path(os.getenv("MAP_KEYFRAMES_DIR", str(_find_dir(["map-keyframes", "map_keyframes"], "D:/vids/map-keyframes/map-keyframes"))))
+
+    THUMBNAIL_ROOT = Path(os.getenv("THUMBNAIL_ROOT", str(_find_dir(["keyframes"], "D:/University/Summ26/AICData/keyframes"))))
+    VIDEO_DIR = Path(os.getenv("VIDEO_DIR", str(_find_dir(["videos", "video"], "D:/University/Summ26/AICData/video"))))
+
+    INDEX_PREFIX = "routing101"
+
+try:
+    SUMMARY_EMBED_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INDEX_DIR = REPO_ROOT / "index"
+INDEX_DIR = Path(os.getenv("INDEX_DIR", str(REPO_ROOT / "index")))
 PIPELINE_DIR = REPO_ROOT / "pipeline"  # rule/LLM-extracted per-lot metadata CSVs (backend/metadata_filter.py)
-ASR_INDEX_DIR = INDEX_DIR / "routing101_asr"
-CAPTION_INDEX_DIR = INDEX_DIR / "routing101_caption"
-SUMMARY_INDEX_DIR = INDEX_DIR / "routing101_summary"
+ASR_INDEX_DIR = INDEX_DIR / f"{INDEX_PREFIX}_asr"
+CAPTION_INDEX_DIR = INDEX_DIR / f"{INDEX_PREFIX}_caption"
+SUMMARY_INDEX_DIR = INDEX_DIR / f"{INDEX_PREFIX}_summary"
 ASR_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 CAPTION_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 SUMMARY_INDEX_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,11 +126,11 @@ SIGLIP_CAPTION_META = CAPTION_INDEX_DIR / "meta_siglip_caption.csv"
 SIGLIP_SUMMARY_FAISS = SUMMARY_INDEX_DIR / "siglip_summary_flat_ip.index"
 SIGLIP_SUMMARY_META = SUMMARY_INDEX_DIR / "meta_siglip_summary.csv"
 
-ES_HOST = "http://localhost:9200"
-ES_INDEX_ASR = "asr_segments"
-ES_INDEX_CAPTION = "caption_frames"
-ES_INDEX_OCR = "ocr_frames"
-ES_INDEX_SUMMARY = "summary_videos"
+ES_HOST = os.getenv("ES_HOST", "http://127.0.0.1:9200")
+ES_INDEX_ASR = f"{INDEX_PREFIX}_asr_segments" if DATASET_MODE == "ADL" else "asr_segments"
+ES_INDEX_CAPTION = f"{INDEX_PREFIX}_caption_frames" if DATASET_MODE == "ADL" else "caption_frames"
+ES_INDEX_OCR = f"{INDEX_PREFIX}_ocr_frames" if DATASET_MODE == "ADL" else "ocr_frames"
+ES_INDEX_SUMMARY = f"{INDEX_PREFIX}_summary_videos" if DATASET_MODE == "ADL" else "summary_videos"
 
 # Thread-pool tuning -- CPU-only torch defaults to num-cores intraop threads
 # AND num-cores interop threads, and FAISS's own OpenMP pool defaults to

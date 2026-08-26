@@ -49,19 +49,19 @@ def l2_normalize(mat: np.ndarray) -> np.ndarray:
 
 
 def parse_lot_range(text: str, exclude: bool = False):
-    """'L21-L30' / 'L21' / '21-30' -> (lo, hi, exclude) lot range, or None if
+    """'L21-L30' / 'P01-P10' / '21-30' / 'L21' / 'P01' -> (lo, hi, exclude) lot range, or None if
     blank/unparsable. `exclude` flips apply_filters from "keep only this
     range" (the default) to "drop this range" -- the sidebar's "Exclude"
     checkbox next to "Search in collection"."""
     text = (text or "").strip().upper()
     if not text:
         return None
-    m = re.match(r"^L?(\d+)\s*-\s*L?(\d+)$", text)
+    m = re.match(r"^(?:L|P|ADL_?)?(\d+)\s*-\s*(?:L|P|ADL_?)?(\d+)$", text)
     if m:
         lo, hi = int(m.group(1)), int(m.group(2))
         lo, hi = (lo, hi) if lo <= hi else (hi, lo)
         return (lo, hi, exclude)
-    m = re.match(r"^L?(\d+)$", text)
+    m = re.match(r"^(?:L|P|ADL_?)?(\d+)$", text)
     if m:
         n = int(m.group(1))
         return (n, n, exclude)
@@ -69,13 +69,16 @@ def parse_lot_range(text: str, exclude: bool = False):
 
 
 def video_lot_num(video_id: str):
-    m = re.match(r"^L(\d+)", str(video_id).upper())
+    m = re.match(r"^(?:L|P|ADL_?)?(\d+)", str(video_id).upper())
     return int(m.group(1)) if m else None
 
 
 def video_lot_str(video_id: str) -> str:
     lot = video_lot_num(video_id)
-    return f"L{lot}" if lot is not None else str(video_id)
+    if lot is not None:
+        prefix = "P" if str(video_id).upper().startswith("P") else "L"
+        return f"{prefix}{lot}"
+    return str(video_id)
 
 
 def apply_filters(df: pd.DataFrame, video_filter: str, lot_range) -> pd.DataFrame:
