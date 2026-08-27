@@ -122,12 +122,17 @@ export function renderGrid(container, results, groupMode = null) {
         header.innerHTML = `<b>${groupKey}</b> · best rank ${best.rank} · ${best.score_label}=${best.score_val.toFixed(4)} · ${frames.length} ${unit}`;
         container.append(header);
 
+        // Per-frame actions, same as ungrouped mode -- grouping is just a
+        // display arrangement, each frame still needs its own show-more/
+        // play/copy/export targets.
         const grid = document.createElement("div");
         grid.className = "grid";
-        for (const r of frames) grid.append(renderThumb(r));
+        for (const r of frames) {
+            const cell = renderThumb(r);
+            cell.append(renderActions(r.video_id, r.n, { collectionOnly: groupMode === "collection" }));
+            grid.append(cell);
+        }
         container.append(grid);
-
-        container.append(renderActions(best.video_id, best.n, { collectionOnly: groupMode === "collection" }));
 
         const hr = document.createElement("hr");
         hr.className = "divider";

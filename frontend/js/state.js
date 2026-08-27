@@ -13,9 +13,10 @@ export const state = {
 
 // ---------------------------------------------------------------------------
 // Export (AIC submission CSV) -- tracks the current signal's last result
-// set, which the export popup (export-dialog.js) reads as its "similars"
-// preview tier whenever a result card's ★ button opens it. Reset on every
-// new search -- a fresh result set invalidates the old one.
+// set, which the standalone Export CSV tab (export-ui.js, opened by
+// export-dialog.js) reads as its "similars" preview tier whenever a result
+// card's ★ button opens it. Reset on every new search -- a fresh result
+// set invalidates the old one.
 // ---------------------------------------------------------------------------
 
 export const exportState = {
@@ -25,6 +26,20 @@ export const exportState = {
 export function resetExportCandidates(candidates) {
     exportState.candidates = candidates || [];
 }
+
+// Exposed on `window` (not just this module's export binding) so the
+// standalone Export CSV tab (frontend/export.html, opened via window.open
+// from export-dialog.js) can reach it as `window.opener.__routing101` --
+// same-origin windows can read/write each other's plain JS objects
+// directly, no postMessage/serialization needed, as long as this tab stays
+// open. `exportState` is handed over by reference, so the export tab's
+// "Similars" preview reflects this tab's most recent search live, not a
+// frozen snapshot from whenever the export tab was opened. `handoffs`
+// carries the one-shot trigger object across for each ★ click (see
+// export-dialog.js/export-page.js).
+window.__routing101 = window.__routing101 || {};
+window.__routing101.exportState = exportState;
+window.__routing101.handoffs = window.__routing101.handoffs || new Map();
 
 // ---------------------------------------------------------------------------
 // Mixed mode config -- ui/app.py:1252-1267. ONE shared config, read/written
@@ -119,6 +134,16 @@ export function scopeFilters() {
     };
 }
 
+// Best-effort OS clipboard write, alongside the scope-box fill below --
+// wrapped since Clipboard.writeText() can reject (no secure context, no
+// document focus, permission denied) and that must never break the
+// scope-fill behavior it rides along with.
+function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+    }
+}
+
 // Mirrors ui/app.py's copy_to_scope/copy_collection_only (ui/app.py:233-242):
 // fills the scope boxes from one frame's video_id, but -- same as the
 // original -- does NOT auto-check "Use video"/"Use collection" for you.
@@ -126,9 +151,11 @@ export function copyToScope(videoId) {
     document.getElementById("video-filter").value = videoId;
     const m = /^L(\d+)/i.exec(videoId);
     document.getElementById("lot-filter").value = m ? `L${m[1]}` : videoId;
+    copyTextToClipboard(videoId);
 }
 
 export function copyCollectionOnly(videoId) {
     const m = /^L(\d+)/i.exec(videoId);
     document.getElementById("lot-filter").value = m ? `L${m[1]}` : videoId;
+    copyTextToClipboard(videoId);
 }
