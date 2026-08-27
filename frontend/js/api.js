@@ -33,8 +33,13 @@ export function getNeighbors(videoId, centerN, before, after) {
     return jsonFetch(`/api/neighbors?${qs}`);
 }
 
+// n omitted (undefined/null) starts playback at 0:00 with no keyframe
+// lookup -- used by the TRAKE Export tab's curation panel to play a bare
+// video_id before any event exists yet (see backend/routes/playback.py).
 export function getPlayback(videoId, n) {
-    const qs = new URLSearchParams({ video_id: videoId, n });
+    const params = { video_id: videoId };
+    if (n !== undefined && n !== null) params.n = n;
+    const qs = new URLSearchParams(params);
     return jsonFetch(`/api/playback?${qs}`);
 }
 
@@ -56,8 +61,10 @@ export async function uploadQueryImage(blob) {
 
 // Export returns CSV text, not JSON, so it can't go through jsonFetch --
 // fetch it as a blob and trigger a browser download via a throwaway <a>.
-export async function exportCsv(body) {
-    const res = await fetch("/api/export", {
+// Shared by exportCsv (KIS/VQA) and writeTrakeCsv (TRAKE) below, both of
+// which hit a PlainTextResponse+Content-Disposition endpoint.
+async function postForCsvDownload(url, body) {
+    const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -70,12 +77,27 @@ export async function exportCsv(body) {
     const match = /filename="?([^"]+)"?/.exec(res.headers.get("Content-Disposition") || "");
     const filename = match ? match[1] : "export.csv";
 
-    const url = URL.createObjectURL(blob);
+    const objUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
+    a.href = objUrl;
     a.download = filename;
     document.body.append(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(objUrl);
 }
+
+export const exportCsv = (body) => postForCsvDownload("/api/export", body);
+
+// TRAKE row generation: one video's curated ordered frame_idx list ->
+// <=max_rows candidate sequences, cached client-side (export-ui.js) keyed
+// by video_id. Pure computation, no download -- see backend/export.py's
+// generate_trake_rows().
+export function getTrakeRows(videoId, frameIdxs, maxRows) {
+    return postJson("/api/export/trake-rows", { video_id: videoId, frame_idxs: frameIdxs, max_rows: maxRows });
+}
+
+// TRAKE final export: a human-merged row set, already interleaved
+// client-side from the per-video cache -- no ranking/dedup left to do,
+// just CSV formatting + download.
+export const writeTrakeCsv = (rows, filename) => postForCsvDownload("/api/export/trake-write", { rows, filename });

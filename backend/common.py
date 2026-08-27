@@ -184,6 +184,50 @@ def valid_ns_for_video(video_id: str) -> set:
     return set(mk["n"].astype(int))
 
 
+def n_for_frame_idx(video_id: str, frame_idx: int):
+    """Reverse of frame_idx_for_n: native frame_idx -> keyframe n, only if
+    frame_idx exactly matches an existing keyframe's frame_idx. Used by
+    TRAKE row generation (backend/export.py::generate_trake_rows) to tell
+    apart a keyframe-backed pick (neighbours ranked by keyframe-index
+    distance) from a raw native-frame pick with no embedding behind it
+    (neighbours ranked by plain frame-number distance instead). Returns
+    None if frame_idx isn't any keyframe's, including when map-keyframes
+    itself is missing for video_id."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty or frame_idx is None:
+        return None
+    hit = mk.loc[mk["frame_idx"] == int(frame_idx)]
+    if hit.empty:
+        return None
+    return int(hit.iloc[0]["n"])
+
+
+def native_frame_range_for_video(video_id: str):
+    """(lo, hi) bound on real frame_idx values for video_id, used by TRAKE
+    row generation to keep interpolated/hedge frame numbers in range. Only
+    as precise as map-keyframes' own frame_idx column (the true last video
+    frame can run a little past the last keyframe's) -- good enough for a
+    filler-row bound, not claimed to be the exact video length. Falls back
+    to a generous synthetic range if map-keyframes is missing entirely, so
+    callers never have to special-case "no data" themselves."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty:
+        return (0, 10**7)
+    return (0, int(mk["frame_idx"].max()))
+
+
+def video_fps_for_video(video_id: str) -> float:
+    """Any one row's fps for video_id -- map-keyframes stores the same fps
+    on every row for a given video. Used to start TRAKE curation playback
+    from a bare video_id, before any keyframe/timestamp is known yet.
+    Falls back to the same 25.0 default backend/routes/playback.py already
+    uses when a specific frame's fps can't be resolved."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty:
+        return 25.0
+    return float(mk.iloc[0]["fps"])
+
+
 # ---------------------------------------------------------------------------
 # Result-shape contract -- every leg/signal normalizes to this dict shape
 # before it's returned to the frontend (mirrors ui/app.py's df_to_results).

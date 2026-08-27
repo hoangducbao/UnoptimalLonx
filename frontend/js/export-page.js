@@ -41,12 +41,12 @@ if (!handoffId || !opener || opener.closed || !opener.__routing101) {
                     return [];
                 }
             },
-            onDone: (reason, filename) => {
-                if (reason === "exported") {
-                    root.innerHTML = `<div class="status-banner info">✓ Exported ${filename}.csv -- you can close this tab.</div>`;
-                    return;
-                }
-                // Cancel: this tab only exists because we opened it via
+            // Only ever called for "cancel" -- a successful export leaves
+            // the form in place (see export-ui.js's #exp-export handler)
+            // rather than tearing this page down, so the user can
+            // immediately re-export without reopening the tab.
+            onDone: () => {
+                // This tab only exists because we opened it via
                 // window.open(), so window.close() is allowed to work here
                 // -- but some browsers still refuse it, hence the fallback.
                 window.close();

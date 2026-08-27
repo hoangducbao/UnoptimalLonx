@@ -111,6 +111,7 @@ export async function openPlaybackDialog(videoId, n) {
         <div class="playback-info">
           <div class="thumb-caption">${videoId} — frame ${n}</div>
           <div id="playback-timer" class="playback-timer">--:-- · frame --</div>
+          <button class="btn" id="playback-export-btn" style="margin-top:0.5rem;" title="Export the exact frame currently playing">★ Export this frame</button>
         </div>
       </div>`;
     const { box } = openDialog(null, body);
@@ -133,6 +134,15 @@ export async function openPlaybackDialog(videoId, n) {
         video.addEventListener("timeupdate", () => {
             timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
         });
+
+        // Exports whatever real frame the video is currently at (paused or
+        // not), computed fresh at click time -- not read off the timer's
+        // text, which is just a display of the same arithmetic. No
+        // keyframe n involved at all, so this always opens as a TRAKE
+        // export (see export-ui.js's {kind:"frame"} handling).
+        box.querySelector("#playback-export-btn").onclick = () => {
+            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+        };
     } catch (e) {
         box.querySelector("#playback-video-wrap").innerHTML =
             `<div class="status-banner error">${e.message}</div>`;
@@ -239,6 +249,7 @@ export async function openTrakePlaybackDialog(videoId, events) {
         <div class="playback-info">
           <div class="thumb-caption">${videoId}</div>
           <div id="trake-timer" class="playback-timer">--:-- · frame --</div>
+          <button class="btn" id="trake-export-btn" style="margin-top:0.5rem;" title="Export the exact frame currently playing">★ Export this frame</button>
           <div id="trake-gaps"></div>
         </div>
       </div>`;
@@ -261,6 +272,9 @@ export async function openTrakePlaybackDialog(videoId, events) {
 
     if (!matched.length) {
         box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner info">No matched events to seek to.</div>`;
+        const exportBtn = box.querySelector("#trake-export-btn");
+        exportBtn.disabled = true;
+        exportBtn.title = "No video loaded to read a frame from";
         return;
     }
 
@@ -295,6 +309,12 @@ export async function openTrakePlaybackDialog(videoId, events) {
         video.addEventListener("timeupdate", () => {
             timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
         });
+
+        // Same "capture the real frame fresh at click time" pattern as
+        // openPlaybackDialog's own export button.
+        box.querySelector("#trake-export-btn").onclick = () => {
+            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+        };
     } catch (e) {
         box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner error">${e.message}</div>`;
     }

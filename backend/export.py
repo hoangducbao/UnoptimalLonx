@@ -24,27 +24,19 @@ from the video's own existing extracted n's, ordered by |n - center| --
 equivalent to time-gap order since map-keyframes rows are chronological) --
 arbitrary non-keyframe frame_idx neighbours are a later phase.
 
-TRAKE row structure is different in kind, not just in row shape: a TRAKE
-answer is a human's exact (video_id, frame_idx_1..N) pick from watching the
-video directly, in *native* frame_idx space -- there's no keyframe `n` to
-translate, unlike KIS/VQA (its export-popup UI is a later phase, still
-just a placeholder):
-  confirmed mode:   [human-picked (video_id, frame_idxs)] + [shell hedges:
-                     every event shifted together by the same +/-15,
-                     +/-30, ... native-frame offset, widening outward] --
-                     up to max_rows.
-  unconfirmed mode: [one row per shortlisted candidate video, its own
-                     proposed frame_idx sequence, confidence order, no
-                     hedging] + [shell hedges of each candidate's sequence,
-                     same widening pattern, video-by-video in confidence
-                     order, as filler] -- up to max_rows.
-A shell hedge shifts *every* event by the same signed offset in one row,
-not one event at a time: it's a bet that the whole pick is off by a
-consistent timing drift (the human's playback-position sense was off, or a
-candidate's whole alignment is shifted), which is both a more plausible
-failure mode than one event drifting independently and a far more
-row-efficient hedge than a cross-product across events would be, since
-only the single best row per R@k band ever counts.
+TRAKE row structure is different in kind, not just in row shape, and lives
+entirely outside generate_export()/rows_to_csv_text() below -- see
+generate_trake_rows() and its own docstring. A TRAKE answer is a human's
+exact (video_id, frame_idx_1..N) pick from watching the video directly, in
+*native* frame_idx space -- there's no keyframe `n` to translate, unlike
+KIS/VQA. There's no confirmed/unconfirmed distinction for TRAKE any more:
+curation happens per video (an ordered event list, each a native
+frame_idx, built by watching that video in the Export tab), row generation
+happens per video into an in-memory cache (frontend/js/export-ui.js), and
+a human merges however many cached videos they curated into one final
+<=100-row CSV at export time -- see generate_trake_rows()'s docstring for
+the row-generation half of that, and CLAUDE.md's "Export architecture"
+section for the curate/cache/merge flow end to end.
 
 Deliberately reuses the app's *existing* result-dict shapes instead of a
 parallel Candidate model:
@@ -53,37 +45,23 @@ parallel Candidate model:
     non-TRAKE signal already returns).
   - KIS/VQA confirmed/answers: {video_id, n} (n = the app's internal
     1-indexed keyframe ordinal).
-  - TRAKE candidates (unconfirmed mode): {video_id, video_score,
-    order_valid, coverage, events: [...]} (backend/search/trake.py::
-    trake_rank_videos), where each events[i] is {event_index, label,
-    matched, n, score_val, ...} when matched -- n gets translated to
-    frame_idx once, up front, in _generate_export_trake().
-  - TRAKE confirmed: {video_id, frame_idxs: [f1, ..., fN]} -- already
-    native frame_idx, straight from a human's manual pick, no lookup.
 
 KIS/VQA rows built here stay n-space; rows_to_csv_text() below does the n
 -> frame_idx translation AIC submissions actually expect (frame_idx_for_n
 in backend/common.py) plus final text formatting -- kept separate so the
 ranking/dedup logic is testable without touching map-keyframes files. TRAKE
-rows are already resolved to frame_idx by the time they leave
-_generate_export_trake(), so rows_to_csv_text() does no lookup for them.
+rows (video_id + a list of already-native frame_idxs, straight from
+generate_trake_rows() or a merge of several cached calls to it) are always
+already resolved to frame_idx, so rows_to_csv_text() does no lookup for
+them.
 """
 
+from random import Random
 from typing import Optional
 
-from .common import frame_idx_for_n, valid_ns_for_video
+from .common import frame_idx_for_n, n_for_frame_idx, native_frame_range_for_video, valid_ns_for_video
 
 DEFAULT_NEIGHBOUR_COUNT = 10
-
-# TRAKE hedge shells: every event shifted together by this many native
-# frames, widening outward (+15, -15, +30, -30, ...). ~10 frames is the
-# scoring model's typical GT window width, so 15 clears one window's worth
-# per shell without being so small that early shells barely move.
-TRAKE_SHELL_STEP = 15
-# Upper bound on shells generated -- 60 shells * 2 signs = up to 120 hedge
-# sequences, comfortably more than a 100-row budget (minus the 1 top row)
-# could ever consume, even after dedup/negative-frame skips.
-TRAKE_MAX_SHELLS = 60
 
 
 def _flat_key(video_id, n) -> tuple:
@@ -111,9 +89,11 @@ def generate_export(query_type: str, candidates: list, mode: str,
                      neighbour_count: int = DEFAULT_NEIGHBOUR_COUNT, max_rows: int = 100) -> list:
     """Rank/dedup into <=max_rows rows for one query's submission CSV.
     `answer` (VQA text) isn't handled here -- it's the same string on
-    every row, applied later by rows_to_csv_text()."""
-    if query_type == "TRAKE":
-        return _generate_export_trake(candidates, mode, confirmed, max_rows)
+    every row, applied later by rows_to_csv_text(). KIS/VQA only -- TRAKE
+    has its own generate_trake_rows() below, called through the dedicated
+    /api/export/trake-rows + /api/export/trake-write routes instead of
+    this one, since its curate/cache/merge flow doesn't fit this
+    single-shot candidates-in-rows-out shape."""
     return _generate_export_flat(candidates, mode, confirmed, answers, neighbour_count, max_rows)
 
 
@@ -159,74 +139,112 @@ def _generate_export_flat(candidates: list, mode: str, confirmed: Optional[dict]
     return rows
 
 
-def _shell_hedges(base_frame_idxs: list) -> list:
-    """Every uniform-shift hedge sequence around base_frame_idxs, widening
-    outward in shells of TRAKE_SHELL_STEP native frames: all events +15,
-    all events -15, then +30, -30, ... (see module docstring for why a
-    shift is applied to every event together rather than one at a time).
-    A sequence is skipped if any event would go negative; shells stop
-    after TRAKE_MAX_SHELLS regardless (see its comment)."""
-    hedges = []
-    for shell in range(1, TRAKE_MAX_SHELLS + 1):
-        radius = TRAKE_SHELL_STEP * shell
-        for offset in (radius, -radius):
-            seq = [f + offset for f in base_frame_idxs]
-            if all(f >= 0 for f in seq):
-                hedges.append(seq)
-    return hedges
+TRAKE_INTERP_SEED = 20260828  # arbitrary fixed seed -- see generate_trake_rows()'s docstring
 
 
-def _generate_export_trake(candidates: list, mode: str, confirmed: Optional[dict], max_rows: int) -> list:
-    seen, rows = set(), []
-
-    def add(video_id: str, frame_idxs: list) -> bool:
-        key = (video_id, tuple(frame_idxs))
-        if key in seen or len(rows) >= max_rows:
-            return False
-        seen.add(key)
-        rows.append({"video_id": video_id, "frame_idxs": list(frame_idxs)})
-        return True
-
-    if mode == "confirmed":
-        if confirmed is None:
-            raise ValueError("mode='confirmed' requires a confirmed candidate")
-        video_id = confirmed["video_id"]
-        base = [int(f) for f in confirmed["frame_idxs"]]
-        add(video_id, base)
-        for seq in _shell_hedges(base):
-            if len(rows) >= max_rows:
-                break
-            add(video_id, seq)
-        return rows
-
-    # mode == "unconfirmed": resolve each shortlisted candidate's n's to
-    # frame_idx once, up front (skipping any candidate with an unmatched or
-    # otherwise unresolvable event -- no frame_idx to put in that column).
-    ranked = sorted(candidates, key=_confidence, reverse=True)
-    resolved = []
-    for c in ranked:
-        if not all(e.get("matched") for e in c["events"]):
-            continue
-        frame_idxs = [frame_idx_for_n(c["video_id"], e["n"]) for e in c["events"]]
-        if any(f is None for f in frame_idxs):
-            continue
-        resolved.append((c["video_id"], frame_idxs))
-
-    # Top tier: one row per candidate video, its own proposed sequence, no
-    # hedging -- wrong video scores 0 regardless of frame precision, so
-    # this tier is pure distinct-hypothesis diversification.
-    for video_id, frame_idxs in resolved:
-        add(video_id, frame_idxs)
-
-    # Filler tier: shell-hedge each candidate's own sequence, video-by-
-    # video in the same confidence order, until the row budget is spent.
-    for video_id, frame_idxs in resolved:
-        if len(rows) >= max_rows:
+def _event_neighbour_stream(video_id: str, frame_idx: int, count: int) -> list:
+    """Up to `count` ranked (nearest-first) neighbour frame_idxs for one
+    TRAKE event's pick. A keyframe-backed pick (frame_idx matches some
+    keyframe's own native frame exactly) ranks by keyframe-index (n)
+    distance, same metric/pool as the KIS/VQA "Neighbours" tier -- reuses
+    nearest_keyframes_by_time() and translates its n's back to frame_idx.
+    A pick with no keyframe behind it has no embedding and thus no
+    "similar" pool to search at all -- see module docstring -- so it ranks
+    by plain frame-number distance instead: frame_idx+1, frame_idx-1,
+    frame_idx+2, frame_idx-2, ..., clipped to the video's real frame
+    range."""
+    n = n_for_frame_idx(video_id, frame_idx)
+    if n is not None:
+        return [f for f in (frame_idx_for_n(video_id, nb) for nb in nearest_keyframes_by_time(video_id, n, count))
+                if f is not None]
+    lo, hi = native_frame_range_for_video(video_id)
+    out = []
+    for shell in range(1, count + 1):
+        for cand in (frame_idx + shell, frame_idx - shell):
+            if lo <= cand <= hi:
+                out.append(cand)
+        if len(out) >= count:
             break
-        for seq in _shell_hedges(frame_idxs):
-            if len(rows) >= max_rows:
+    return out[:count]
+
+
+def _fill_trake_row(raw: list, lo: int, hi: int, rng: Random) -> list:
+    """One row's worth of per-event frame numbers, left to right, given
+    each event's raw k-th-neighbour candidate (None where that event's
+    stream ran dry, or never had one -- see generate_trake_rows()). Walks
+    events in sequence order, tracking the previous event's already-chosen
+    frame number as a running lower bound: a raw candidate is used as-is
+    if it clears that bound (i.e. it's already in temporal order with
+    what came before), otherwise -- whether because it's None or because
+    it would tie/violate the i<j frame-number ordering -- a frame is
+    interpolated instead, picked uniformly at random strictly between the
+    running lower bound and the nearest usable upper bound (the next
+    event's own raw candidate if it clears the running bound too, else the
+    video's own end). This is the one rule the spec leaves open ("no fixed
+    rule") -- it satisfies temporal ordering per-row by construction,
+    without needing a second corrective pass."""
+    n = len(raw)
+    chosen = []
+    prev = lo
+    for i in range(n):
+        val = raw[i]
+        if val is not None and val > prev:
+            chosen.append(val)
+            prev = val
+            continue
+        upper = hi
+        for j in range(i + 1, n):
+            if raw[j] is not None and raw[j] > prev:
+                upper = raw[j]
                 break
-            add(video_id, seq)
+        upper = max(upper, prev + 1)
+        pick = rng.randint(prev + 1, upper - 1) if upper - 1 > prev else prev + 1
+        pick = min(pick, hi)
+        chosen.append(pick)
+        prev = pick
+    return chosen
+
+
+def generate_trake_rows(video_id: str, frame_idxs: list, max_rows: int = 100) -> list:
+    """<=max_rows candidate sequences for one video's curated TRAKE event
+    list, per the spec's row-generation rules:
+      row 1            = the curated picks, in event order, as given.
+      rows 2..max_rows = row k's event i = event i's k-th nearest
+                          neighbour (see _event_neighbour_stream), taken
+                          independently per event and zipped by rank.
+    Temporal ordering (event i's frame number < event j's for i<j) is
+    enforced within each row only, via _fill_trake_row's interpolation
+    fallback -- used whenever an event's own k-th neighbour is missing
+    (its stream ran dry, or it had none to begin with) or would break that
+    row's ordering. One row is attempted per rank 1..max_rows-1; an exact
+    duplicate of an already-emitted row (which interpolation's randomness
+    makes rare but not impossible, especially in a short/crowded video) is
+    dropped rather than retried, so the result can come back shorter than
+    max_rows -- consistent with every other export tier in this module,
+    where a spent dedup slot is never backfilled.
+    A fixed RNG seed (TRAKE_INTERP_SEED) makes an unchanged event list's
+    output byte-identical across repeated "Generate rows" clicks, which
+    matters once a video's cache entry has been included in a merge and
+    then regenerated -- otherwise every regenerate would silently reshuffle
+    already-reviewed filler rows for no reason."""
+    if not frame_idxs:
+        raise ValueError("need at least one curated event")
+    frame_idxs = [int(f) for f in frame_idxs]
+    lo, hi = native_frame_range_for_video(video_id)
+    rng = Random(TRAKE_INTERP_SEED)
+
+    streams = [_event_neighbour_stream(video_id, f, max_rows) for f in frame_idxs]
+
+    seen = {tuple(frame_idxs)}
+    rows = [list(frame_idxs)]
+    for k in range(max_rows - 1):
+        raw = [streams[i][k] if k < len(streams[i]) else None for i in range(len(frame_idxs))]
+        row = _fill_trake_row(raw, lo, hi, rng)
+        key = tuple(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
 
     return rows
 
@@ -246,9 +264,9 @@ def rows_to_csv_text(query_type: str, rows: list, mode: str = "unconfirmed", ans
     for row in rows:
         video_id = row["video_id"]
         if query_type == "TRAKE":
-            # Already native frame_idx by construction (_generate_export_trake
-            # resolves n -> frame_idx, or takes a human's frame_idx pick
-            # directly) -- no lookup needed here.
+            # Already native frame_idx by construction (generate_trake_rows,
+            # or a merged list of several of its calls) -- no lookup needed
+            # here.
             fields = [video_id, *(str(f) for f in row["frame_idxs"])]
         else:
             frame_idx = frame_idx_for_n(video_id, row["n"])

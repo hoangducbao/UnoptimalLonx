@@ -16,17 +16,23 @@ backend/
   common.py           shared helpers (result-shape contract, map-keyframes lookups)
   models.py           SigLIP2 text/image tower, loaded once, shared across signals
   export.py           AIC submission CSV row-generation logic (KIS/VQA/TRAKE)
+  od_filter.py         object-detection text filter (fuzzy class match)
+  metadata_filter.py   structured per-lot metadata facet filter
   es_client.py, es_indexing.py   Elasticsearch client + bulk-indexing for the fuzzy legs
   search/             per-signal search + RRF (keyframe, asr, caption, ocr, summary, mixed, hierarchy, trake)
-  routes/             FastAPI endpoints on top of search/ (+ export, playback, neighbors, query_image)
+  routes/             FastAPI endpoints on top of search/ (+ export, facets, playback, neighbors, query_image)
 frontend/
-  index.html
-  js/                 app.js (signal switcher) + api.js, state.js, render.js, dialogs.js, export-dialog.js
+  index.html           main app shell
+  export.html           standalone Export CSV page (opened in its own tab, see Export below)
+  js/                 app.js (signal switcher) + api.js, state.js, render.js, dialogs.js
+  js/export-dialog.js, export-page.js, export-ui.js   Export CSV tab: opener handoff, entry point, UI
   js/signals/          one module per signal, same render/search shape
   css/style.css
 pipeline/
   config.py           paths + constants shared by the text encoders
   clip_encoder.py      Multilingual-CLIP text tower (paired with CLIP ViT-B/32 image features)
+  build_class_vocab.py builds the OD class vocabulary od_filter.py matches against
+  *.csv                 per-lot metadata extracted upstream (metadata_filter.py's source)
 index/                 generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
 ```
 
@@ -48,14 +54,42 @@ before it reaches the frontend, so one `renderGrid()` (+ neighbor/playback
 popups) serves every signal except Hierarchy and TRAKE, which render their
 own grouped/multi-event shapes.
 
+## Filters
+
+Three independent scoping dimensions, applied to every signal/leg after
+its own ranking and before the top-k cutoff: **video/collection** scope
+(a single `video_id`, or a lot range like `L21-L30`, optionally excluded
+instead of restricted-to), the **Object filter** (free-text class names,
+fuzzy-matched against an offline OD vocabulary, e.g. "car, dog, red car"),
+and the **Metadata filter** (a dropdown over structured per-lot facets like
+subject/province, populated from `/api/facets`).
+
 ## Export
 
-Every result card's ★ button opens an export popup that generates a
-ranked, deduped CSV for one AIC query (`query-p2-<#>-<kis|qa|trake>.csv`,
-no header row) — confirmed mode (a picked answer + time/similarity-based
-hedge rows) or unconfirmed mode (curated/ranked candidates + hedges),
-capped at 100 rows per the R@k scoring model. See `backend/export.py`'s
-module docstring for the exact row-generation rules.
+Every result card's ★ button opens the Export CSV UI in its own **browser
+tab** (`frontend/export.html`), not an in-page popup — it stays in sync
+with whatever you're currently searching in the original tab. It generates
+a ranked, deduped CSV for one AIC query (`query-p2-<#>-<kis|qa|trake>.csv`,
+no header row), capped at 100 rows per the R@k scoring model:
+
+- **KIS/VQA** — confirmed mode (a picked answer + time/similarity-based
+  hedge rows) or unconfirmed mode (a curated ordered list of candidates +
+  hedges).
+- **TRAKE** — no confirmed/unconfirmed distinction. A curate → cache →
+  merge flow instead: watch a video inline in the tab and click "Add" to
+  capture the frame currently playing into an ordered event list (or add
+  one from a preview card / the Frame ID box); "Generate rows" turns that
+  video's events into ≤100 candidate sequences and caches them
+  client-side, keyed by video_id — repeat for as many candidate videos as
+  you want to compare; Export interleaves whichever cached videos you
+  check, in the priority order you drag them into, into one final ≤100-row
+  CSV. Not limited to an actual TRAKE search: any signal's result card, a
+  Neighbours/Similars preview pick, or a frame captured live from a
+  video-playback dialog can seed a curation session's first event.
+
+See `backend/export.py`'s module docstring for the exact row-generation
+rules, and `CLAUDE.md`'s "Export architecture" section for how the tab
+reads the opener's search results live.
 
 ## Data (external, not in this repo)
 
@@ -71,6 +105,7 @@ Update those constants, not a config file, if the data moves.
 - `AICDataExtracted/captions/{video_id}.csv` — raw frame captions, bulk-indexed into ES
 - `AICDataExtracted/ocr/{video_id}.csv` — per-frame OCR text, bulk-indexed into ES (no embedding leg)
 - `AICDataExtracted/summaries/` + `summary_embed/` — one-paragraph video summaries (embedded on first use, cached)
+- `AICDataExtracted/filtered_object/{video_id}.csv` + `class_vocab.csv` — per-frame OD detections + vocabulary, backs the Object filter
 - `AICData/map-keyframes/{video_id}.csv` — per-frame timestamps + native `frame_idx`, resolves ASR/text hits to a keyframe number and backs the CSV export's `n -> frame_idx` translation
 - `AICData/keyframes/{video_id}/{n:03d}.jpg` — thumbnails
 - `AICData/video/{video_id}.mp4` — source video, used by the playback dialogs
