@@ -11,4 +11,6 @@ docs/
 old_version/
 
 CLAUDE.md
-ARCHITECTURE.md
+# ARCHITECTURE.md is tracked again -- it's teammate-facing reference docs
+# now (moved out of README.md), not a Claude-only working file like
+# CLAUDE.md above.

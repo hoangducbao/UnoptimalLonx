@@ -1,7 +1,7 @@
 // frontend/js/export-ui.js -- the actual Export CSV UI: query-type
 // segmented control, confirmed/unconfirmed answer curation, Neighbours/
-// Similars preview grids, TRAKE's per-event frame_idx curation. Mounted by
-// export-page.js into the standalone Export CSV tab (frontend/export.html)
+// Similars preview grids (KIS/VQA only), TRAKE's per-video event curation.
+// Mounted by export-page.js into the standalone Export CSV tab (frontend/export.html)
 // -- this module knows nothing about being in a separate tab: the host
 // supplies a plain container element, a `getCandidates` accessor (so
 // "Similars" can read a *different* tab's live search results without this
@@ -19,9 +19,9 @@
 //       1. Curate one video at a time: an inline <video> preview (loaded
 //          by typing a video id, or seeded from `trigger`) plus an "Add"
 //          button that captures whatever frame is currently playing into
-//          an ordered event list (drag to reorder, ✕ to remove -- same
-//          shape as before, just no keyframe/matched bookkeeping). A
-//          preview card's "+" or the Frame ID box can add an event too.
+//          an ordered event list (drag to reorder, ✕ to remove). No
+//          Neighbours/Similars preview for TRAKE -- the Frame ID box is
+//          the only other way to add an event, besides the video itself.
 //       2. "Generate rows" POSTs that video's {video_id, frame_idxs} to
 //          /api/export/trake-rows and caches the <=100 returned candidate
 //          sequences client-side, keyed by video_id (`s.trake.cache`
@@ -188,7 +188,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         <div id="exp-trake-body" style="display:none;">
           <div id="exp-trake-content"></div>
         </div>
-        <div class="export-preview-area">
+        <div class="export-preview-area" id="exp-preview-area">
           <div class="export-preview-section">
             <div class="export-preview-header"><b>Neighbours</b> <span class="thumb-caption muted">(nearest keyframes by time)</span></div>
             <div class="grid export-preview-grid" id="exp-nbr-grid"></div>
@@ -230,11 +230,14 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         // module docstring) -- the checkbox only means something for
         // KIS/VQA.
         el("#exp-confirmed-row").style.display = isTrake ? "none" : "flex";
-        // The preview area (Neighbours/Similars, outside both bodies above)
-        // is relevant for every query type now -- its "+" buttons add to
-        // the current TRAKE curation event list instead of the KIS/VQA
-        // answer list when isTrake (see renderPreview()), so it's never
-        // hidden here.
+        // No Neighbours/Similars preview for TRAKE at all -- per spec,
+        // TRAKE events have no "similar" pool to search (only a picked
+        // frame's own keyframe/native-distance neighbours, which is what
+        // row generation already computes server-side); events come from
+        // the curation panel's video playback, the Frame ID box, or the
+        // seeding trigger only. renderPreview() itself skips fetching for
+        // TRAKE too, not just this visibility toggle.
+        el("#exp-preview-area").style.display = isTrake ? "none" : "flex";
 
         // Frame ID/Change is repurposed for TRAKE, not hidden: a native
         // frame number needs no keyframe lookup, so it means "add an
@@ -250,11 +253,15 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         changeVideo.value = isTrake ? (s.trake.videoId || "") : "";
         changeVideo.title = isTrake ? "Switch curation video from the TRAKE panel below" : "";
 
+        // Same typing box either way -- unconfirmed mode used to disable
+        // this with an "LLM needed" placeholder (answering unconfirmed
+        // VQA queries was meant to be automated later), but that's no
+        // longer the plan: a human types the answer regardless of mode.
         const isVqa = s.queryType === "VQA";
         const answerText = el("#exp-answer-text");
         answerText.style.display = isVqa ? "block" : "none";
-        answerText.disabled = isVqa && !s.confirmed;
-        answerText.placeholder = (isVqa && !s.confirmed) ? "LLM needed (filled automatically -- later phase)" : "VQA answer";
+        answerText.disabled = false;
+        answerText.placeholder = "VQA answer";
     }
 
     function frameCardHtml(f, info, { removable = false, index = null } = {}) {
@@ -332,7 +339,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         renderPreview();
     }
 
-    function previewCardHtml(f, { addable, replaceable, trakeAddable }) {
+    function previewCardHtml(f, { addable, replaceable }) {
         const already = addable && isInAnswers(f);
         const isCurrent = replaceable && s.answerFrame && s.answerFrame.video_id === f.video_id && s.answerFrame.n === f.n;
         const addBtn = addable
@@ -345,29 +352,22 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         const replaceBtn = replaceable
             ? `<button class="icon-btn export-add-btn${isCurrent ? " added" : ""}" title="${isCurrent ? "Current answer frame" : "Use as answer frame"}" data-video-id="${f.video_id}" data-n="${f.n}" data-replace="1"${isCurrent ? " disabled" : ""}>${isCurrent ? "✓" : "⇄"}</button>`
             : "";
-        // TRAKE mode: add this preview frame as a new sequence event
-        // (same-video-guarded inside addTrakeEvent) rather than replacing
-        // or adding to the KIS/VQA answer(s).
-        const trakeBtn = trakeAddable
-            ? `<button class="icon-btn export-add-btn" title="Add as TRAKE event" data-video-id="${f.video_id}" data-n="${f.n}" data-trake="1">+</button>`
-            : "";
         return `<div class="thumb-cell">
             <div class="thumb-wrap thumb-wrap-static"><img src="${f.thumbnail_url}" loading="lazy"></div>
             <div class="thumb-caption"><b>${f.video_id}</b> · frame ${f.n}</div>
-            ${addBtn}${replaceBtn}${trakeBtn}
+            ${addBtn}${replaceBtn}
         </div>`;
     }
 
+    // KIS/VQA only -- TRAKE has no Neighbours/Similars preview at all (see
+    // renderTypeVisibility's #exp-preview-area toggle and module
+    // docstring: a TRAKE pick's only "similar" pool is what row generation
+    // already computes server-side, not something to browse here).
     async function renderPreview() {
-        const isTrakeMode = s.queryType === "TRAKE";
-        const addable = !s.confirmed && !isTrakeMode;
-        // TRAKE has no single "current export frame" (it's an ordered
-        // list of native frame_idx events, a different model entirely) --
-        // only offer replace for KIS/VQA's confirmed mode.
-        const replaceable = s.confirmed && !isTrakeMode;
-        // Every preview card can add itself to the video currently being
-        // curated (no confirmed/unconfirmed gating any more).
-        const trakeAddable = isTrakeMode;
+        if (s.queryType === "TRAKE") return;
+
+        const addable = !s.confirmed;
+        const replaceable = s.confirmed;
 
         // Neighbours -- nearest keyframes by time to the trigger frame.
         const nbrGrid = el("#exp-nbr-grid");
@@ -385,7 +385,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
                 }
             }
             const frames = s.neighbourFrames.slice(0, s.neighboursShown).map((f) => ({ ...f, video_id: s.trigger.video_id }));
-            nbrGrid.innerHTML = frames.map((f) => previewCardHtml(f, { addable, replaceable, trakeAddable })).join("") || `<div class="status-banner info">No neighbours found.</div>`;
+            nbrGrid.innerHTML = frames.map((f) => previewCardHtml(f, { addable, replaceable })).join("") || `<div class="status-banner info">No neighbours found.</div>`;
             el("#exp-nbr-more").style.display = s.neighbourFrames.length >= s.neighboursShown ? "block" : "none";
         }
 
@@ -401,24 +401,19 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             el("#exp-sim-more").style.display = "none";
         } else {
             const similars = candidates.slice(0, s.similarsShown);
-            simGrid.innerHTML = similars.map((c) => previewCardHtml(c, { addable, replaceable, trakeAddable }))
+            simGrid.innerHTML = similars.map((c) => previewCardHtml(c, { addable, replaceable }))
                 .join("") || `<div class="status-banner info">No results from the last search.</div>`;
             el("#exp-sim-more").style.display = candidates.length > s.similarsShown ? "block" : "none";
         }
 
         if (addable) {
-            box.querySelectorAll(".export-add-btn:not([data-replace]):not([data-trake])").forEach((btn) => {
+            box.querySelectorAll(".export-add-btn:not([data-replace])").forEach((btn) => {
                 btn.onclick = () => addToAnswers({ video_id: btn.dataset.videoId, n: Number(btn.dataset.n) });
             });
         }
         if (replaceable) {
             box.querySelectorAll(".export-add-btn[data-replace]").forEach((btn) => {
                 btn.onclick = () => applyChangedFrame({ video_id: btn.dataset.videoId, n: Number(btn.dataset.n) });
-            });
-        }
-        if (trakeAddable) {
-            box.querySelectorAll(".export-add-btn[data-trake]").forEach((btn) => {
-                btn.onclick = () => addTrakeEventFromN(btn.dataset.videoId, Number(btn.dataset.n));
             });
         }
     }
@@ -513,13 +508,11 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     }
 
     // Adds one event to the video currently being curated -- from the
-    // inline "Add current frame" button (f.thumbnail already captured),
-    // the repurposed Frame ID/Change row (raw frame_idx, no thumbnail),
-    // or a Neighbours/Similars preview card's "+" (resolved through
-    // addTrakeEventFromN below, which supplies the keyframe's own
-    // thumbnail). Enforces the one hard constraint: a TRAKE export row is
-    // exactly one video, so a frame from a different video is rejected
-    // rather than silently starting a second, unrepresentable sequence.
+    // inline "Add current frame" button (f.thumbnail already captured) or
+    // the repurposed Frame ID/Change row (raw frame_idx, no thumbnail).
+    // Enforces the one hard constraint: a TRAKE export row is exactly one
+    // video, so a frame from a different video is rejected rather than
+    // silently starting a second, unrepresentable sequence.
     function addTrakeEvent(f) {
         if (s.trake.videoId && f.video_id !== s.trake.videoId) {
             showStatus(`Currently curating ${s.trake.videoId} -- this frame is from a different video. Switch videos above first if you meant to add it there.`);
@@ -532,9 +525,10 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         return true;
     }
 
-    // Preview-card "+" only has a keyframe n, not a frame_idx/thumbnail --
-    // resolve both the same way the rest of the app already does (n's
-    // thumbnail *is* the frame's real thumbnail, no capture needed).
+    // Resolves a keyframe n (not a raw frame_idx) to its real frame_idx +
+    // thumbnail before adding -- used to seed the curation panel from a
+    // "flat" trigger (any non-TRAKE signal's ★, which only carries n, no
+    // frame_idx) via the same lookup the rest of the app already does.
     function addTrakeEventFromN(videoId, n) {
         if (s.trake.videoId && videoId !== s.trake.videoId) {
             showStatus(`Currently curating ${s.trake.videoId} -- this frame is from a different video. Switch videos above first if you meant to add it there.`);
@@ -715,22 +709,22 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         trakeSkeletonBuilt = true;
         el("#exp-trake-content").innerHTML = `
             <div class="trake-curate-panel">
-              <div class="trake-loadvideo-row">
+              <div class="trake-toprow">
                 <input type="text" id="trake-load-video" placeholder="Video ID e.g. L21_V001">
-                <button class="btn" id="trake-load-btn" type="button">Load / switch video</button>
+                <button class="btn" id="trake-load-btn" type="button">Load / switch</button>
+                <span id="trake-cur-timer" class="playback-timer">--:-- · frame --</span>
+                <button class="btn btn-primary" id="trake-add-btn" type="button">+ Add current frame as event</button>
               </div>
-              <div class="playback-layout">
-                <div class="playback-main" id="trake-video-wrap">
+              <div class="trake-main-row">
+                <div class="trake-video-col" id="trake-video-wrap">
                   <div class="status-banner info">Load a video above, or open this tab from a result card's ★.</div>
                 </div>
-                <div class="playback-info">
-                  <div id="trake-cur-timer" class="playback-timer">--:-- · frame --</div>
-                  <button class="btn btn-primary" id="trake-add-btn" type="button">+ Add current frame as event</button>
+                <div class="trake-events-col">
+                  <div class="thumb-caption muted" style="margin-bottom:0.4rem;">Events, in sequence order -- drag to reorder, ✕ to remove:</div>
+                  <div class="trake-event-list" id="trake-event-list"></div>
+                  <button class="btn btn-primary" id="trake-generate-btn" type="button" style="margin-top:0.6rem;">Generate rows for this video</button>
                 </div>
               </div>
-              <div class="thumb-caption muted" style="margin:0.6rem 0 0.4rem;">Events, in sequence order -- drag to reorder, ✕ to remove:</div>
-              <div class="trake-event-list" id="trake-event-list"></div>
-              <button class="btn btn-primary" id="trake-generate-btn" type="button" style="margin-top:0.6rem;">Generate rows for this video</button>
             </div>
             <hr class="divider">
             <div class="trake-cache-panel">

@@ -35,8 +35,8 @@ frame_idx, built by watching that video in the Export tab), row generation
 happens per video into an in-memory cache (frontend/js/export-ui.js), and
 a human merges however many cached videos they curated into one final
 <=100-row CSV at export time -- see generate_trake_rows()'s docstring for
-the row-generation half of that, and CLAUDE.md's "Export architecture"
-section for the curate/cache/merge flow end to end.
+the row-generation half of that, and ARCHITECTURE.md's "Export
+architecture" section for the curate/cache/merge flow end to end.
 
 Deliberately reuses the app's *existing* result-dict shapes instead of a
 parallel Candidate model:
@@ -249,17 +249,16 @@ def generate_trake_rows(video_id: str, frame_idxs: list, max_rows: int = 100) ->
     return rows
 
 
-def rows_to_csv_text(query_type: str, rows: list, mode: str = "unconfirmed", answer: str = "") -> str:
+def rows_to_csv_text(query_type: str, rows: list, answer: str = "") -> str:
     """n -> frame_idx translation + final CSV text: no header row,
     video_id/frame_idx columns unquoted, VQA answer column always quoted
     (confirmed against the real submission/*.csv samples already in the
     repo -- e.g. `L30_V072,676,"Giang Ly"`, quoted even with no comma, so
-    plain csv.QUOTE_MINIMAL wouldn't reproduce it). VQA + unconfirmed has
-    no real answer yet (LLM answering is a later phase) -- every row gets
-    the literal placeholder regardless of what's passed."""
-    if query_type == "VQA" and mode != "confirmed":
-        answer = "LLM needed"
-
+    plain csv.QUOTE_MINIMAL wouldn't reproduce it). `answer` is always a
+    human-typed value now, confirmed or not -- the export popup's typing
+    box is the same either way (no more auto-filled "LLM needed"
+    placeholder for unconfirmed mode -- that was for a planned automated-
+    answering phase that isn't happening)."""
     lines = []
     for row in rows:
         video_id = row["video_id"]

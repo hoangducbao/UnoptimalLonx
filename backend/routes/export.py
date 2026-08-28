@@ -86,7 +86,7 @@ def export_csv(body: ExportRequest):
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    csv_text = export_mod.rows_to_csv_text(body.query_type, rows, mode=body.mode, answer=body.answer)
+    csv_text = export_mod.rows_to_csv_text(body.query_type, rows, answer=body.answer)
     filename = _safe_filename(body.filename)
     return PlainTextResponse(
         csv_text, media_type="text/csv",
