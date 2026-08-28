@@ -241,7 +241,7 @@ button {
 /* ---------------------------------------------------------------------- */
 
 .export-page {
-    max-width: 1100px;
+    max-width: 1800px;
     margin: 0 auto;
     padding: 1.5rem 2rem;
 }
@@ -256,15 +256,6 @@ button {
     border-radius: var(--radius);
 }
 
-.export-options {
-    display: flex;
-    gap: 0.6rem;
-    align-items: center;
-    margin-bottom: 0.75rem;
-}
-.export-options .segmented { flex: none; }
-.export-options input[type="text"], .export-options input[type="number"] { flex: 1; }
-
 .segmented { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .segmented button {
     border: none;
@@ -277,8 +268,20 @@ button {
 .segmented button:last-child { border-right: none; }
 .segmented button.active { background: var(--accent); color: #fff; }
 
-.export-change-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
-.export-change-row input { flex: 1; }
+/* Everything that used to be three separate rows (query-type segmented
+   control, Query#/Video ID/Frame ID/Change, Cancel/Export) shares one row
+   to save vertical space -- wraps rather than overflowing on a narrow
+   window. */
+.export-topbar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+}
+.export-topbar .segmented { flex: none; }
+.export-topbar input#exp-name { flex: 0 0 110px; }
+.export-topbar .export-actions { flex: none; margin-left: auto; }
 
 .export-answer-area { margin: 0.75rem 0; }
 .export-answer-area input[type="text"] { margin-top: 0.5rem; }
@@ -286,7 +289,7 @@ button {
 .export-answer-list { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.5rem; }
 .export-answer-card {
     position: relative;
-    width: 110px;
+    width: 220px;
     font-size: 0.78rem;
     padding: 0.3rem;
     border: 1px solid var(--border);
@@ -315,7 +318,7 @@ button {
 }
 .export-preview-section { flex: 1 1 320px; min-width: 0; }
 .export-preview-header { margin-bottom: 0.4rem; }
-.export-preview-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; }
+.export-preview-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.5rem; }
 .export-preview-grid .thumb-cell { position: relative; font-size: 0.72rem; }
 .export-preview-grid .thumb-caption { font-size: 0.72rem; }
 
@@ -343,6 +346,7 @@ button {
 
 .trake-event-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .trake-event-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0.6rem;
@@ -350,29 +354,82 @@ button {
     border: 1px solid var(--border);
     border-radius: var(--radius);
 }
+.trake-event-row[draggable="true"] { cursor: grab; }
+/* Same corner-badge treatment as .export-answer-card's remove button --
+   TRAKE events are editable (add/remove/reorder) now, not just a fixed
+   list from a real TRAKE search. */
+.trake-event-row .export-remove-btn {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    z-index: 200;
+    width: 20px;
+    height: 20px;
+    font-size: 0.7rem;
+}
 .trake-event-row .thumb-wrap, .trake-event-row .thumb-missing { width: 70px; flex: none; }
 .trake-event-fields { flex: 1; }
-.trake-frame-input {
-    width: 100%;
-    margin-top: 0.25rem;
-    padding: 0.3rem 0.4rem;
-    font-family: inherit;
-    font-size: 0.9rem;
+
+/* TRAKE curate/cache/merge panel (export-ui.js's ensureTrakeSkeleton) --
+   .playback-timer above is shared with the modal playback dialogs, but
+   .playback-layout/.playback-main/.playback-info aren't (this panel uses
+   its own .trake-toprow/.trake-main-row/.trake-video-col layout instead,
+   see below); .dialog-box video's sizing doesn't apply outside a dialog
+   either, so the curation video gets its own equivalent rule here. */
+.export-dialog video {
+    display: block;
+    max-width: 100%;
+    width: auto;
+    height: auto;
+    margin: 0 auto;
+    border-radius: 4px;
+}
+/* Load/switch video + the live video/frame/time readout + "Add current
+   frame" all share one compact row -- the Video ID box and its button are
+   deliberately small (a one-time-per-video action), unlike the wide,
+   prominent Add-frame button (the repeated per-event action). */
+.trake-toprow {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+}
+.trake-toprow input#trake-load-video { flex: 0 0 170px; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+.trake-toprow #trake-load-btn { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.trake-toprow .playback-timer { margin: 0; }
+
+/* Video preview (left, 65%) and the event list (right, 35%) share one
+   row -- .export-dialog video's max-width:100% keeps the video within its
+   65% column regardless of the source video's native aspect ratio. */
+.trake-main-row { display: flex; gap: 1.25rem; align-items: flex-start; }
+/* flex-shrink:1 (not 0) so the row's gap doesn't push the 65/35 split past
+   100% of the container -- both columns give up the same few px, keeping
+   the ratio effectively intact. */
+.trake-video-col { flex: 0 1 65%; min-width: 0; }
+.trake-events-col { flex: 0 1 35%; min-width: 0; }
+
+.trake-cache-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.5rem;
+    margin-bottom: 0.4rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    cursor: grab;
 }
-.trake-candidate-row {
-    padding: 0.35rem 0;
-    font-size: 0.85rem;
-    border-bottom: 1px solid var(--border);
-}
+.trake-cache-row .thumb-caption { flex: 1; margin: 0; }
 
-.export-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-    margin-top: 1.25rem;
-}
+.export-actions { display: flex; gap: 0.5rem; }
+
+/* Video ID/Frame ID/Change -- share the topbar's remaining space and
+   collapse to nothing (display:none, set in export-ui.js) while TRAKE is
+   selected -- TRAKE has no single "current export frame" to retarget with
+   Video ID/Frame ID. Query# (also in .export-topbar, see above) stays
+   visible for every type. */
+.export-change-fields { display: flex; gap: 0.5rem; flex: 1 1 260px; min-width: 0; }
+.export-change-fields input { flex: 1; min-width: 0; }
 
 /* ---------------------------------------------------------------------- */
 /* Dialogs */
