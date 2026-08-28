@@ -134,14 +134,23 @@ function renderCandidate(container, c) {
         const cell = document.createElement("div");
         cell.className = "thumb-cell";
         if (e.matched) {
+            // A matched event is already shaped exactly like a flat signal
+            // result ({video_id, n}) -- reuse the existing flat export
+            // pipeline directly, no new logic, so any single event's frame
+            // can be exported (or added to a new TRAKE sequence) on its
+            // own, not just the whole video/candidate below.
             cell.innerHTML = `<div class="${thumbClass}"><img src="${e.thumbnail_url}"></div>
                 <div class="thumb-caption"><b>${e.label}</b> · frame ${e.n}</div>
-                <div class="thumb-caption muted">${e.score_label}=${e.score_val.toFixed(4)}</div>`;
+                <div class="thumb-caption muted">${e.score_label}=${e.score_val.toFixed(4)}</div>
+                <button class="icon-btn export-event-btn" title="Export this event's frame" data-n="${e.n}">★</button>`;
         } else {
             cell.innerHTML = `<div class="thumb-caption"><b>${e.label}</b></div><div class="thumb-caption muted">no match</div>`;
         }
         grid.append(cell);
     }
+    grid.querySelectorAll(".export-event-btn").forEach((btn) => {
+        btn.onclick = () => openExportDialog({ kind: "flat", video_id: c.video_id, n: Number(btn.dataset.n) });
+    });
     container.append(grid);
 
     // Single play-icon action per video: acts as both playback and "copy

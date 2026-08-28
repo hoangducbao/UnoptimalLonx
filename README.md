@@ -1,116 +1,226 @@
 # Routing101
 
 Multi-signal text-to-keyframe retrieval over the AIC video corpus (873
-videos / ~177k keyframes), plus an AIC-submission CSV export flow. Eight
-searchable signals — Keyframe, ASR, Caption, OCR, Summary, Mixed, TRAKE,
-Hierarchy — each embedded/file-based (FAISS flat indices) except the
-fuzzy-text legs, which use a local Elasticsearch. One FastAPI process
-serves both the JSON API and the static frontend.
+videos / ~177k keyframes), plus an AIC-submission CSV export flow. One
+FastAPI process serves both the JSON API and the static frontend.
 
-## Layout
+This file is a **build-and-run guide** — pick your track below and follow
+it top to bottom. For how the system actually works (layout, signals,
+export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
 
-```
-backend/
-  config.py           paths + constants (data lives outside the repo, see Data below)
-  main.py             FastAPI app entry -- mounts routers + static frontend/media
-  common.py           shared helpers (result-shape contract, map-keyframes lookups)
-  models.py           SigLIP2 text/image tower, loaded once, shared across signals
-  export.py           AIC submission CSV row-generation logic (KIS/VQA/TRAKE)
-  es_client.py, es_indexing.py   Elasticsearch client + bulk-indexing for the fuzzy legs
-  search/             per-signal search + RRF (keyframe, asr, caption, ocr, summary, mixed, hierarchy, trake)
-  routes/             FastAPI endpoints on top of search/ (+ export, playback, neighbors, query_image)
-frontend/
-  index.html
-  js/                 app.js (signal switcher) + api.js, state.js, render.js, dialogs.js, export-dialog.js
-  js/signals/          one module per signal, same render/search shape
-  css/style.css
-pipeline/
-  config.py           paths + constants shared by the text encoders
-  clip_encoder.py      Multilingual-CLIP text tower (paired with CLIP ViT-B/32 image features)
-index/                 generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
-```
+- [Prerequisites](#prerequisites)
+- [Track A — Run locally](#track-a--run-locally)
+- [Track B — Run on Kaggle](#track-b--run-on-kaggle)
+- [Verifying it's working](#verifying-its-working)
+- [Troubleshooting](#troubleshooting)
 
-## Signals
+## Prerequisites
 
-| Signal | Legs | Notes |
-|---|---|---|
-| Keyframe | SigLIP2, CLIP ViT-B/32, RRF | frame embeddings |
-| ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | transcript segments mapped to nearest keyframe |
-| Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | one row per keyframe |
-| OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |
-| Summary | SigLIP2-summary, Elasticsearch fuzzy, RRF | video-level: one result per video |
-| Mixed | weighted RRF across Keyframe/ASR/Caption/OCR | per-signal on/off leg toggles + adjustable weights |
-| Hierarchy | SigLIP2 only | frame search grouped by video, drilled down per video |
-| TRAKE | reuses the other signals, one per event | ordered multi-event search: find videos where every event's best match occurs in order |
+- **Python** 3.11+ (developed against 3.14; nothing in `requirements.txt`
+  pins a floor, but don't go below 3.10 -- `torch>=2.8.0` won't install).
+- **The data.** This repo ships no data at all -- get the `AICData` +
+  `AICDataExtracted` folders from the team (shared drive/bucket, ask
+  whoever last ran the pipeline). Both tracks below need these, just
+  staged in different places. The exact subfolders you need:
 
-Every leg normalizes to `{video_id, n, rank, score_label, score_val, text}`
-before it reaches the frontend, so one `renderGrid()` (+ neighbor/playback
-popups) serves every signal except Hierarchy and TRAKE, which render their
-own grouped/multi-event shapes.
+  ```
+  AICDataExtracted/siglib_embed/*.npy              SigLIP2 frame embeddings (768-d)
+  AICDataExtracted/transcript_embed/                SigLIP2 ASR-segment embeddings + .csv
+  AICDataExtracted/transcripts/                     raw ASR segments (bulk-indexed into ES)
+  AICDataExtracted/caption_embed/                   SigLIP2 caption embeddings + .csv
+  AICDataExtracted/captions/                        raw frame captions (bulk-indexed into ES)
+  AICDataExtracted/ocr/                             per-frame OCR text (bulk-indexed into ES)
+  AICDataExtracted/summaries/ + summary_embed/       one-paragraph video summaries
+  AICDataExtracted/filtered_object/ (+class_vocab.csv)  per-frame OD detections + vocabulary
+  AICData/clip-features-32/*.npy                    CLIP ViT-B/32 frame embeddings (512-d, fp16)
+  AICData/map-keyframes/*.csv                       per-frame timestamps + native frame_idx
+  AICData/keyframes/{video_id}/{n:03d}.jpg           thumbnails
+  AICData/video/{video_id}.mp4                       source video (playback dialogs)
+  ```
 
-## Export
+  `summary_embed/` and `index/` are write targets too (the app creates/
+  fills them itself on first run) -- just make sure the parent directory
+  is writable.
 
-Every result card's ★ button opens an export popup that generates a
-ranked, deduped CSV for one AIC query (`query-p2-<#>-<kis|qa|trake>.csv`,
-no header row) — confirmed mode (a picked answer + time/similarity-based
-hedge rows) or unconfirmed mode (curated/ranked candidates + hedges),
-capped at 100 rows per the R@k scoring model. See `backend/export.py`'s
-module docstring for the exact row-generation rules.
+- **Elasticsearch 8.x**, reachable at boot. This is not optional even if
+  you don't care about fuzzy text search: `backend/main.py`'s startup
+  calls `ensure_all_fuzzy_indices()` with no try/except around it, so an
+  unreachable Elasticsearch **crashes the whole app on launch**, not just
+  the fuzzy legs. (Once the four indices exist and the app is up, a
+  *later* ES outage does degrade gracefully -- empty results + a warning,
+  per signal. It's only the boot-time existence check that's unguarded.)
+  How you get Elasticsearch differs by track, see below.
 
-## Data (external, not in this repo)
+## Track A — Run locally
 
-All raw data/embeddings live outside the repo, under absolute paths
-hardcoded in `backend/config.py` (currently `D:/University/Summ26/AICData*`).
-Update those constants, not a config file, if the data moves.
+1. **Clone and install:**
+   ```
+   git clone <this repo> && cd Routing101
+   pip install -r requirements.txt
+   ```
 
-- `AICDataExtracted/siglib_embed/*.npy` — SigLIP2 frame embeddings (768-d)
-- `AICData/clip-features-32/{video_id}.npy` — CLIP ViT-B/32 frame embeddings (512-d, float16)
-- `AICDataExtracted/transcript_embed/{video_id}.npy` + `.csv` — SigLIP2 embeddings of ASR segments (one row per segment × keyframe)
-- `AICDataExtracted/transcripts/{video_id}.csv` — raw ASR segments, bulk-indexed into ES for the fuzzy leg
-- `AICDataExtracted/caption_embed/{video_id}.npy` + `.csv` — SigLIP2 embeddings of frame captions (one row per keyframe)
-- `AICDataExtracted/captions/{video_id}.csv` — raw frame captions, bulk-indexed into ES
-- `AICDataExtracted/ocr/{video_id}.csv` — per-frame OCR text, bulk-indexed into ES (no embedding leg)
-- `AICDataExtracted/summaries/` + `summary_embed/` — one-paragraph video summaries (embedded on first use, cached)
-- `AICData/map-keyframes/{video_id}.csv` — per-frame timestamps + native `frame_idx`, resolves ASR/text hits to a keyframe number and backs the CSV export's `n -> frame_idx` translation
-- `AICData/keyframes/{video_id}/{n:03d}.jpg` — thumbnails
-- `AICData/video/{video_id}.mp4` — source video, used by the playback dialogs
+2. **Point the app at your data.** All data paths are hardcoded module
+   constants (single-team local scaffold, no env-file layer) -- edit
+   these two files to match wherever you staged the folders above:
+   - `backend/config.py` -- every `*_DIR`/`*_GLOB` constant near the top
+     (`FRAME_SIGLIP2_GLOB`, `ASR_EMBED_DIR`, `TRANSCRIPTS_DIR`, ...,
+     `MAP_KEYFRAMES_DIR`, `THUMBNAIL_ROOT`, `VIDEO_DIR`). They're all
+     absolute paths under one root today (`D:/University/Summ26/AICData*`)
+     -- if you mirror that same layout, it's a one-line prefix change per
+     platform, not per constant.
+   - `pipeline/config.py` -- just a model name, nothing to change here
+     unless you're swapping the CLIP text tower.
 
-## Run
+3. **Start Elasticsearch** (Docker):
+   ```
+   docker run -d --name es -p 9200:9200 \
+       -e "discovery.type=single-node" \
+       -e "xpack.security.enabled=false" \
+       -e "xpack.ml.enabled=false" \
+       -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" \
+       -v es-data:/usr/share/elasticsearch/data \
+       docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+   ```
+   The `-v es-data:...` volume matters: without it, `docker rm`/recreate
+   loses all four fuzzy indices and the next launch re-bulks everything
+   from CSV. With the volume, `ensure_*_fuzzy_index()` in
+   `backend/es_indexing.py` checks `es.indices.exists(...)` up front and
+   only (re)indexes an index that doesn't exist yet -- to force a rebuild
+   after changing source data, delete that one index (e.g.
+   `curl -X DELETE localhost:9200/caption_frames`) rather than the whole
+   container/volume.
 
-```
-uvicorn backend.main:app --reload
-```
+   Wait for it to actually be up before the next step:
+   ```
+   curl http://localhost:9200   # should return a JSON cluster info blob, not a connection error
+   ```
 
-Then open `http://localhost:8000/app/`. Elasticsearch is required for
-every fuzzy leg (ASR, Caption, OCR, Summary) — degrades to an empty result
-with an on-page warning if unreachable:
+4. **Run the app:**
+   ```
+   uvicorn backend.main:app --reload
+   ```
+   First boot loads the SigLIP2 model, builds the FAISS indices in
+   memory, and bulk-indexes the four ES fuzzy indices (only the first
+   time -- see step 3's volume note) -- expect 15-60s depending on disk
+   speed, not instant. Watch for `[startup] all signals ready` in the
+   console; the server *does* accept connections a little before that
+   line prints (see [Troubleshooting](#troubleshooting) on log buffering)
+   but search requests will just queue until it's actually done.
 
-```
-docker run -d --name es -p 9200:9200 \
-    -e "discovery.type=single-node" \
-    -e "xpack.security.enabled=false" \
-    -e "xpack.ml.enabled=false" \
-    -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" \
-    -v es-data:/usr/share/elasticsearch/data \
-    docker.elastic.co/elasticsearch/elasticsearch:8.15.0
-```
+5. Open **http://localhost:8000/app/**.
 
-The `-v es-data:...` volume matters: without it, `docker rm`/recreate
-loses all four fuzzy indices and the next launch re-bulks everything from
-CSV. With the volume, `ensure_*_fuzzy_index()` in `backend/es_indexing.py`
-checks `es.indices.exists(...)` up front and only (re)indexes an index
-that doesn't exist yet — to force a rebuild after changing source data,
-delete that one index (e.g. `curl -X DELETE localhost:9200/caption_frames`)
-rather than the whole container/volume.
+`--reload` is convenient but its file-watcher isn't fully reliable in
+every environment -- if you edit a `backend/*.py` file and don't see the
+change take effect, kill the process and restart manually rather than
+trusting it blindly. Frontend edits (`frontend/**`) never need a restart
+at all, they're re-served fresh on every request.
 
-## Run on Kaggle
+## Track B — Run on Kaggle
 
-To run the complete pipeline and web UI on Kaggle with `nguyenthanghuu/aic2026-dataset`:
-1. Upload [kaggle_routing101.ipynb](file:///d:/StudioProjects/Routing101/kaggle_routing101.ipynb) to a new Kaggle Notebook.
-2. Select **Accelerator: GPU T4 x2** and turn **Internet: ON**.
-3. Attach dataset `nguyenthanghuu/aic2026-dataset`.
-4. Run all cells in sequence — Cloudflare Tunnel will print a public HTTPS link to access the web app.
+The core app doesn't change for Kaggle -- same FastAPI process, same
+`uvicorn` command -- but three things about the *environment* do: no
+persistent disk with your data already on it, no Docker daemon for
+Elasticsearch, and no public port for a browser to reach.
 
-No test suite, linter, or build step exists in this repo. See `CLAUDE.md`
-for architecture notes and conventions (result-shape contract, RRF fusion,
-index build order, etc.).
+### Quick Start with Pre-built Kaggle Notebook
+
+For the simplest and most robust setup, use the included **`kaggle_routing101.ipynb`** notebook:
+1. Upload [kaggle_routing101.ipynb](file:///d:/StudioProjects/Routing101/kaggle_routing101.ipynb) to a Kaggle Notebook.
+2. Set **Accelerator**: `GPU T4 x2` (or P100) and turn **Internet: ON**.
+3. Attach your datasets:
+   - `aic2026-dataset` (`Keyframes`, `Videos`, `map-keyframes`)
+   - `rrqbundle` (`siglib_embed`, `ocr`, `captions`, `summaries`, `filtered_object`, etc.)
+4. Run all cells in sequence (Step 1 -> Step 5).
+   - **Step 1**: Clones repo & installs dependencies.
+   - **Step 2**: Starts Elasticsearch 8.11 daemon cleanly with JVM heap limits.
+   - **Step 3**: Deep pruned auto-discovery dynamically maps dataset paths.
+   - **Step 4**: Diagnostics check (Elasticsearch + SigLIP2 vector search).
+   - **Step 5**: Launches FastAPI + Uvicorn with Cloudflare Tunnel (no token required).
+
+---
+
+### Manual Setup Steps (if running step-by-step)
+
+1. **Get the data onto Kaggle.** Package `AICData`/`AICDataExtracted` as
+   a Kaggle Dataset (zip it and use "New Dataset", or "Add Data" in your
+   notebook if a teammate already published one for the team) and attach
+   it to your notebook. It mounts read-only under
+   `/kaggle/input/<dataset-slug>/...`.
+
+2. **Point the app at Kaggle's paths.** Same two files as Track A step 2
+   (`backend/config.py`, `pipeline/config.py`), just pointed at
+   `/kaggle/input/<dataset-slug>/...` instead of the `D:/...` paths.
+   `INDEX_DIR`/`SUMMARY_EMBED_DIR` (under `REPO_ROOT`, i.e. wherever you
+   `!git clone`'d the repo inside the notebook) are fine as-is -- they're
+   write targets the app creates itself, `/kaggle/working/` has room.
+
+3. **Install dependencies** (Kaggle images already have `numpy`/`pandas`/
+   `torch`; this just fills in what's missing):
+   ```bash
+   !pip install -q fastapi uvicorn python-multipart cachetools \
+       "elasticsearch>=8.11,<8.13" multilingual-clip timm faiss-cpu pycloudflared
+   ```
+
+4. **Get Elasticsearch running.** Kaggle notebooks don't run a Docker
+   daemon, so the `docker run` command from Track A is out. Two options:
+   - **Simplest: point `ES_HOST` at a hosted Elasticsearch** (Elastic
+     Cloud has a free trial) instead of `http://127.0.0.1:9200`.
+   - **Self-contained: run the ES binary directly in the notebook:**
+     ```bash
+     !wget -q https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-8.11.0-linux-x86_64.tar.gz
+     !tar -xzf elasticsearch-8.11.0-linux-x86_64.tar.gz -C /opt/
+     !useradd -m -s /bin/bash esuser 2>/dev/null || true
+     !chown -R esuser:esuser /opt/elasticsearch-8.11.0
+     !touch /kaggle/working/elasticsearch.log && chmod 666 /kaggle/working/elasticsearch.log
+     ```
+     Run via Python `subprocess.Popen` with `start_new_session=True` under `esuser`.
+
+5. **Run the app and tunnel to your browser**:
+   Start Uvicorn in the background and expose via `cloudflared tunnel --url http://127.0.0.1:8000`.
+
+6. **Optional: turn on a GPU** (Settings → Accelerator → GPU T4 x2 or
+   P100) before running -- `backend/models.py` auto-detects
+   `torch.cuda.is_available()`, no code change needed, and it meaningfully
+   speeds up SigLIP2/CLIP inference over CPU-only.
+
+## Verifying it's working
+
+Once you're on `/app/`:
+- The left sidebar's signal icons should switch panels; typing a query
+  and hitting enter should return keyframe results.
+- Any fuzzy-text signal (ASR/Caption/OCR/Summary) returning results
+  (not just a warning banner) confirms Elasticsearch is actually wired up
+  correctly, not just running.
+- A result card's ▶ (playback) and ★ (export) buttons should both open
+  without errors -- ▶ needs `AICData/video/*.mp4` + `map-keyframes`
+  resolvable, ★ needs `map-keyframes` too.
+
+## Troubleshooting
+
+- **"Loading weights: 100%" then nothing for a while, then a burst of
+  `[startup] ...` lines all at once, `all signals ready` right at the
+  end.** Normal -- Python fully buffers `print()` output when it's not
+  writing to a real terminal (redirected to a log file, `nohup`, etc.),
+  so those lines were already printed, they just hadn't flushed yet. The
+  process itself is not stuck; if you want ground truth, poll an actual
+  endpoint (`curl localhost:8000/app/`) rather than staring at the log.
+- **Two things end up listening on the same port after a restart.**
+  `--reload`'s file-watcher can silently miss an edit (only reload once,
+  then stop noticing further changes), and a killed process can leave an
+  orphaned multiprocessing worker behind that keeps holding memory (and,
+  confusingly, `netstat` can keep showing the old dead PID against that
+  port for a bit). If a restart is behaving strangely, check
+  `tasklist`/`ps` for more `python` processes than you expect and kill
+  the stragglers, not just the one you started last.
+- **A browser tab keeps showing old UI/behavior after you *know* the
+  server has the new code.** `frontend/` is served with
+  `Cache-Control: no-cache` (forces revalidation, not `no-store` -- an
+  unchanged file still 304s), but that only applies going forward from
+  when this was added; a tab that already cached a file under the old
+  (implicit, heuristic-freshness) caching behavior won't retroactively
+  revalidate on its own. One hard refresh (Ctrl+Shift+R) fixes that tab
+  for good; a brand-new tab is never affected.
+- **The whole app fails to start with a connection error mentioning
+  Elasticsearch.** Elasticsearch isn't reachable at `ES_HOST` -- see the
+  Prerequisites section above, this is a hard requirement at boot, not a
+  soft one.

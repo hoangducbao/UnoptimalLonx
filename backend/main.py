@@ -59,6 +59,25 @@ async def lifespan(app: FastAPI):
     yield
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Forces revalidation (not a no-store -- ETag/Last-Modified still let
+    a genuinely-unchanged file 304) on every response this mount serves.
+    Plain StaticFiles sets no explicit Cache-Control, so a browser's
+    default heuristic freshness (RFC 7234 4.2.2, computed from each
+    response's own Last-Modified) can keep serving an old JS/CSS file for
+    a while after a real edit, with no visible error: the tab just
+    silently keeps running stale frontend code against the live
+    (already-updated) backend -- this bit us during TRAKE export UI work,
+    a tab kept rendering the pre-edit layout with zero indication anything
+    was wrong. Used for /app only, not /media -- those files are large and
+    genuinely immutable per video_id/frame, unlike frontend source that
+    changes underneath an already-open tab during development."""
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="Routing101 by MiLF", lifespan=lifespan)
 
 app.add_middleware(
@@ -86,7 +105,7 @@ app.mount("/media/video", StaticFiles(directory=config.VIDEO_DIR), name="video")
 
 # Frontend: static HTML/CSS/JS, served under /app so it doesn't collide
 # with /api and /media routes above.
-app.mount("/app", StaticFiles(directory=config.REPO_ROOT / "frontend", html=True), name="frontend")
+app.mount("/app", NoCacheStaticFiles(directory=config.REPO_ROOT / "frontend", html=True), name="frontend")
 
 
 @app.get("/")

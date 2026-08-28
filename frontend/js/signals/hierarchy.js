@@ -32,7 +32,13 @@ async function renderGroupFrames(vid, container) {
     const g = groupsCache.get(vid);
     const grid = container.querySelector(".hier-frame-grid");
     grid.innerHTML = "";
-    for (const r of g.drilled_frames) grid.append(renderThumb(r));
+    // Per-frame actions, same as render.js's grouped renderGrid() -- the
+    // group only controls layout, each frame still needs its own targets.
+    for (const r of g.drilled_frames) {
+        const cell = renderThumb(r);
+        cell.append(renderActions(r.video_id, r.n));
+        grid.append(cell);
+    }
 }
 
 async function redrill(vid, container) {
@@ -55,6 +61,20 @@ function renderGroup(container, vid) {
     header.innerHTML = `<b>${vid}</b> · best rank ${g.best_rank} · ${g.score_label}=${g.best_score_val.toFixed(4)} · ${g.step1_frames.length} frame(s) from Step 1`;
     container.append(header);
 
+    // Expand stays video-level (it pulls more frames for this one video --
+    // there's no per-frame equivalent), separate from the per-frame
+    // show-more/play/copy/export buttons now on each drilled frame below.
+    const expandBtn = document.createElement("button");
+    expandBtn.className = "btn";
+    expandBtn.title = "Pull in 10 more frames from this video";
+    expandBtn.textContent = "⬇ Expand";
+    expandBtn.style.margin = "0.3rem 0";
+    expandBtn.onclick = () => {
+        hierExtraG.set(vid, (hierExtraG.get(vid) || 0) + 10);
+        redrill(vid, container);
+    };
+    container.append(expandBtn);
+
     const seedSelect = document.createElement("select");
     seedSelect.style.cssText = "width:100%;margin:0.3rem 0;padding:0.35rem;border:1px solid var(--border);border-radius:6px;";
     for (const n of g.seed_options) {
@@ -73,20 +93,6 @@ function renderGroup(container, vid) {
     const grid = document.createElement("div");
     grid.className = "grid hier-frame-grid";
     container.append(grid);
-
-    const actionsRow = document.createElement("div");
-    actionsRow.style.cssText = "display:flex;gap:0.5rem;align-items:center;margin-top:0.3rem;";
-    actionsRow.append(renderActions(vid, g.best_n));
-    const expandBtn = document.createElement("button");
-    expandBtn.className = "btn";
-    expandBtn.title = "Pull in 10 more frames from this video";
-    expandBtn.textContent = "⬇ Expand";
-    expandBtn.onclick = () => {
-        hierExtraG.set(vid, (hierExtraG.get(vid) || 0) + 10);
-        redrill(vid, container);
-    };
-    actionsRow.append(expandBtn);
-    container.append(actionsRow);
 
     const hr = document.createElement("hr");
     hr.className = "divider";

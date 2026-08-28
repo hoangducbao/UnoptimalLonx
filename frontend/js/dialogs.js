@@ -5,6 +5,10 @@
 // own phases, same file.
 
 import { getNeighbors, getPlayback } from "./api.js";
+// export-dialog.js now just opens the Export CSV tab (frontend/export.html,
+// see its own header) rather than a modal built from openDialog() here --
+// no circular import with this file any more.
+import { openExportDialog } from "./export-dialog.js";
 import {
     getNeighborExtra, MIXED_DEFAULT_LEGS, MIXED_DEFAULT_WEIGHTS,
     MIXED_LEG_DEFS, MIXED_SIGNAL_NAMES, mixedConfig, saveMixedConfig,
@@ -44,7 +48,7 @@ export async function openNeighborsDialog(videoId, centerN) {
     const body = document.createElement("div");
     body.innerHTML = `<div class="thumb-caption" style="margin-bottom:0.5rem;">${videoId} — around frame ${centerN}</div>
         <button class="btn" id="nbr-up" style="width:100%;margin-bottom:0.5rem;">▲ 10 earlier</button>
-        <div class="grid" id="nbr-grid" style="grid-template-columns:repeat(5,1fr);"></div>
+        <div class="grid nbr-grid" id="nbr-grid" style="grid-template-columns:repeat(5,1fr);"></div>
         <button class="btn" id="nbr-down" style="width:100%;margin-top:0.5rem;">▼ 10 later</button>`;
     const { box } = openDialog("Nearby frames", body, { wide: true });
 
@@ -56,13 +60,28 @@ export async function openNeighborsDialog(videoId, centerN) {
         for (const f of data.frames) {
             const cell = document.createElement("div");
             cell.className = "thumb-cell";
+            // thumb-wrap-static suppresses the normal hover-zoom (same
+            // class TRAKE's low-count cards use) -- distracting in this
+            // tightly packed nearby-frames grid.
             cell.innerHTML = f.exists
-                ? `<div class="thumb-wrap"><img src="${f.thumbnail_url}"></div>`
+                ? `<div class="thumb-wrap thumb-wrap-static"><img src="${f.thumbnail_url}"></div>`
                 : `<div class="thumb-missing">(missing)</div>`;
             const cap = document.createElement("div");
             cap.className = "thumb-caption";
             cap.innerHTML = f.is_center ? `<b>${f.n}</b>` : String(f.n);
             cell.append(cap);
+            if (f.exists) {
+                // Reuses .export-add-btn's CSS (top-right overlay corner,
+                // same as the export screen's own preview cards) purely for
+                // position/sizing -- unrelated to that button's add/replace
+                // behavior elsewhere.
+                const exportBtn = document.createElement("button");
+                exportBtn.className = "icon-btn export-add-btn";
+                exportBtn.title = "Export as AIC submission CSV";
+                exportBtn.textContent = "★";
+                exportBtn.onclick = () => openExportDialog({ kind: "flat", video_id: videoId, n: f.n });
+                cell.append(exportBtn);
+            }
             grid.append(cell);
         }
     }
@@ -92,6 +111,7 @@ export async function openPlaybackDialog(videoId, n) {
         <div class="playback-info">
           <div class="thumb-caption">${videoId} — frame ${n}</div>
           <div id="playback-timer" class="playback-timer">--:-- · frame --</div>
+          <button class="btn" id="playback-export-btn" style="margin-top:0.5rem;" title="Export the exact frame currently playing">★ Export this frame</button>
         </div>
       </div>`;
     const { box } = openDialog(null, body);
@@ -114,6 +134,15 @@ export async function openPlaybackDialog(videoId, n) {
         video.addEventListener("timeupdate", () => {
             timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
         });
+
+        // Exports whatever real frame the video is currently at (paused or
+        // not), computed fresh at click time -- not read off the timer's
+        // text, which is just a display of the same arithmetic. No
+        // keyframe n involved at all, so this always opens as a TRAKE
+        // export (see export-ui.js's {kind:"frame"} handling).
+        box.querySelector("#playback-export-btn").onclick = () => {
+            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+        };
     } catch (e) {
         box.querySelector("#playback-video-wrap").innerHTML =
             `<div class="status-banner error">${e.message}</div>`;
@@ -220,6 +249,7 @@ export async function openTrakePlaybackDialog(videoId, events) {
         <div class="playback-info">
           <div class="thumb-caption">${videoId}</div>
           <div id="trake-timer" class="playback-timer">--:-- · frame --</div>
+          <button class="btn" id="trake-export-btn" style="margin-top:0.5rem;" title="Export the exact frame currently playing">★ Export this frame</button>
           <div id="trake-gaps"></div>
         </div>
       </div>`;
@@ -242,6 +272,9 @@ export async function openTrakePlaybackDialog(videoId, events) {
 
     if (!matched.length) {
         box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner info">No matched events to seek to.</div>`;
+        const exportBtn = box.querySelector("#trake-export-btn");
+        exportBtn.disabled = true;
+        exportBtn.title = "No video loaded to read a frame from";
         return;
     }
 
@@ -276,6 +309,12 @@ export async function openTrakePlaybackDialog(videoId, events) {
         video.addEventListener("timeupdate", () => {
             timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
         });
+
+        // Same "capture the real frame fresh at click time" pattern as
+        // openPlaybackDialog's own export button.
+        box.querySelector("#trake-export-btn").onclick = () => {
+            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+        };
     } catch (e) {
         box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner error">${e.message}</div>`;
     }
