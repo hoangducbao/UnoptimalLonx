@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 
 FETCH_K = 100      # candidates pulled per leg, gives RRF a real pool to fuse
-DISPLAY_N = 30
+DISPLAY_N = 100
 RRF_K = 60
 NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id
 TOP_G_DEFAULT = 5   # Hierarchy Search: frames kept per video after drill-down (Top-G)

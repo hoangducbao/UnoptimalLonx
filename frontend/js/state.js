@@ -116,17 +116,27 @@ export function getNeighborExtra(videoId, centerN) {
     return state.neighborExtra.get(key);
 }
 
+function scopeToggleActive(scope) {
+    return document.querySelector(`#scope-segmented button[data-scope="${scope}"]`).classList.contains("active");
+}
+
 // Reads the sidebar's video/collection scope controls into a request-body
-// fragment -- shared by every signal's search-body builder so the
-// "Exclude" checkbox (drop the collection range instead of restricting to
-// it) only has to be wired up here, not independently in six signal files.
+// fragment -- shared by every signal's search-body builder so the "excl"
+// toggle (drop the collection range instead of restricting to it) only has
+// to be wired up here, not independently in six signal files.
+// "excl" works whether or not "coll" is also on: either one alone is
+// enough to send the collection range, and "excl" decides which way it's
+// applied -- so a bare "excl" (no "coll") still drops that range instead
+// of being a silent no-op.
 export function scopeFilters() {
+    const collActive = scopeToggleActive("collection");
+    const exclActive = scopeToggleActive("exclude");
     return {
-        video_filter: document.getElementById("use-video-scope").checked
+        video_filter: scopeToggleActive("video")
             ? document.getElementById("video-filter").value : "",
-        lot_filter: document.getElementById("use-collection-scope").checked
+        lot_filter: (collActive || exclActive)
             ? document.getElementById("lot-filter").value : "",
-        exclude_lot: document.getElementById("exclude-collection-scope").checked,
+        exclude_lot: exclActive,
         od_filter: document.getElementById("od-filter").value,
         facet_field: document.getElementById("facet-field").value,
         facet_value: document.getElementById("facet-field").value

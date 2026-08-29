@@ -8,7 +8,7 @@ export.py's pure ranking/dedup logic:
   GET  /api/export/neighbors   -- a frame's N nearest keyframes by time, for
                                    the popup's "Neighbours" preview section.
   POST /api/export/trake-rows  -- TRAKE: one video's curated event list ->
-                                   <=100 candidate row sequences, for the
+                                   <=99 candidate row sequences, for the
                                    Export tab's client-side per-video cache.
   POST /api/export/trake-write -- TRAKE: a human-merged row set (built
                                    client-side from that cache, several
@@ -50,14 +50,14 @@ class ExportRequest(BaseModel):
     answers: list = []
     answer: str = ""
     neighbour_count: int = export_mod.DEFAULT_NEIGHBOUR_COUNT
-    max_rows: int = 100
+    max_rows: int = 99
     filename: str = "export"
 
 
 class TrakeRowsRequest(BaseModel):
     video_id: str
     frame_idxs: list[int]
-    max_rows: int = 100
+    max_rows: int = 99
 
 
 class TrakeRow(BaseModel):

@@ -66,14 +66,28 @@ document.querySelectorAll(".signal-btn").forEach((btn) => {
 // actually affect a search -- clicking "Show more"/"Copy" doesn't touch
 // these listeners at all, so there's no wasted-recompute problem to guard
 // against here in the first place).
-["top-k", "top-v", "top-g", "video-filter", "use-video-scope", "lot-filter", "use-collection-scope",
- "exclude-collection-scope", "group-by-video", "show-full-text", "facet-value"].forEach((id) => {
+["top-k", "top-v", "top-g", "video-filter", "lot-filter",
+ "group-by-video", "show-full-text", "facet-value"].forEach((id) => {
     document.getElementById(id).addEventListener("change", runCurrentSearch);
 });
 // facet-field is wired by initFacets() below instead of the generic list
 // above: switching field must reset facet-value's options *before*
 // runCurrentSearch reads it, and that ordering can't be guaranteed across
 // two independently-registered "change" listeners.
+
+// Scope segmented control ("vid" / "coll" / "excl") -- at most one active
+// at a time (0 or 1, never 2-3): clicking an inactive tile clears its
+// siblings before activating it; clicking the already-active one just
+// turns it off, back to 0. Read back by state.js::scopeFilters() via each
+// button's .active class, not a checkbox's .checked.
+document.querySelectorAll("#scope-segmented button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+        const wasActive = btn.classList.contains("active");
+        document.querySelectorAll("#scope-segmented button").forEach((b) => b.classList.remove("active"));
+        if (!wasActive) btn.classList.add("active");
+        runCurrentSearch();
+    });
+});
 
 document.getElementById("video-filter").addEventListener("input", () => {}); // no live-search on keystroke; Enter/blur via change above
 document.getElementById("clear-image-query").addEventListener("click", runCurrentSearch);

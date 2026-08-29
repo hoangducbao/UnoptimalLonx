@@ -71,7 +71,7 @@ same-origin `window.opener` handoff (`state.js` exposes
 to the opener's `exportState`, not a frozen snapshot, so "Similars" always
 reflects the opener's most recent search). It generates a ranked, deduped
 CSV for one AIC query (`query-p2-<#>-<kis|qa|trake>.csv`, no header row),
-capped at 100 rows per the R@k scoring model (Final Score = average of
+capped at 99 rows per the R@k scoring model (Final Score = average of
 R@k for k in {1, 5, 20, 50, 100}, where R@k = max score among the first k
 rows — only the best-scoring row within each threshold band matters, so a
 duplicate of an already-placed row never helps, only wastes a slot).
@@ -99,13 +99,13 @@ duplicate of an already-placed row never helps, only wastes a slot).
   2. **Generate rows**: POSTs that video's `{video_id, frame_idxs}` to
      `/api/export/trake-rows`, which runs
      `backend/export.py::generate_trake_rows` — row 1 is the curated
-     picks as-is; rows 2–100 zip each event's *k*-th nearest neighbour
+     picks as-is; rows 2–99 zip each event's *k*-th nearest neighbour
      (keyframe-index distance if that event's pick is itself a keyframe,
      else plain native-frame-number distance, since a non-keyframe pick
      has no embedding to search a "similar" pool with at all), enforcing
      per-row temporal ordering (event *i*'s frame < event *j*'s for
      *i*<*j*) via random interpolation whenever a neighbour stream runs
-     dry or would break that order. The ≤100 resulting sequences are
+     dry or would break that order. The ≤99 resulting sequences are
      cached client-side, keyed by `video_id` — repeatable for as many
      candidate videos as you want to compare, each just adding another
      cache entry.
@@ -113,7 +113,7 @@ duplicate of an already-placed row never helps, only wastes a slot).
      a priority order; the rows are interleaved client-side (no backend
      round-trip, no re-reading anything) — each checked video's own row 1
      first in priority order, then row 2/3/... round-robin in that same
-     order until the 100-row cap or every video's rows are spent — and
+     order until the 99-row cap or every video's rows are spent — and
      POSTed to `/api/export/trake-write`, which only formats + returns
      CSV text for already-resolved rows (the one file this whole flow
      ever writes to disk).

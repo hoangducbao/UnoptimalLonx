@@ -99,6 +99,9 @@ html, body {
 .scope-row { display: flex; gap: 0.5rem; }
 .scope-row > div { flex: 1; }
 
+#scope-segmented { margin-top: 0.5rem; }
+#scope-segmented button { flex: 1; }
+
 .checkbox-row {
     display: flex;
     align-items: center;

@@ -23,13 +23,13 @@
 //          Neighbours/Similars preview for TRAKE -- the Frame ID box is
 //          the only other way to add an event, besides the video itself.
 //       2. "Generate rows" POSTs that video's {video_id, frame_idxs} to
-//          /api/export/trake-rows and caches the <=100 returned candidate
+//          /api/export/trake-rows and caches the <=99 returned candidate
 //          sequences client-side, keyed by video_id (`s.trake.cache`
 //          below) -- repeatable for as many candidate videos as the human
 //          wants to compare, each just adding another entry.
 //       3. Export: the human checks which cached videos to include and
 //          their priority order; the rows are interleaved client-side (no
-//          backend round-trip, no re-reading anything) into one <=100-row
+//          backend round-trip, no re-reading anything) into one <=99-row
 //          set and POSTed to /api/export/trake-write, which only formats
 //          + returns CSV text for already-resolved rows -- the one file
 //          this whole flow ever writes to disk.
@@ -71,7 +71,7 @@ function freshState(trigger) {
         // TRAKE: no confirmed/unconfirmed distinction any more -- one
         // per-video curation session (video + ordered event list, each a
         // native frame_idx with its own add-time thumbnail) feeds a
-        // "Generate rows" call whose <=100 candidate sequences are cached
+        // "Generate rows" call whose <=99 candidate sequences are cached
         // here per video_id; a final merge step interleaves however many
         // cached videos the human picked, in priority order, into one CSV.
         // See freshTrakeState() below and the "TRAKE: curate one video's
@@ -588,7 +588,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     }
 
     // POSTs this video's curated {video_id, frame_idxs} to
-    // /api/export/trake-rows and stashes the <=100 returned candidate
+    // /api/export/trake-rows and stashes the <=99 returned candidate
     // sequences client-side, keyed by video_id -- repeatable for as many
     // candidate videos as the human wants to compare (each just adds/
     // overwrites its own cache entry, see module docstring). Newly cached
@@ -606,7 +606,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         try {
             const frameIdxs = s.trake.events.map((e) => e.frame_idx);
             const thumbnails = s.trake.events.map((e) => e.thumbnail);
-            const data = await getTrakeRows(s.trake.videoId, frameIdxs, 100);
+            const data = await getTrakeRows(s.trake.videoId, frameIdxs, 99);
             s.trake.cache.set(s.trake.videoId, { frameIdxs, thumbnails, rows: data.rows });
             if (!s.trake.mergeOrder.includes(s.trake.videoId)) s.trake.mergeOrder.push(s.trake.videoId);
             s.trake.mergeChecked.add(s.trake.videoId);
@@ -834,7 +834,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         if (s.queryType === "TRAKE") {
             // Client-side merge of the per-video cache -- no candidates/
             // confirmed/answers body to build, unlike KIS/VQA below.
-            const merged = mergeTrakeCache(100);
+            const merged = mergeTrakeCache(99);
             if (!merged.length) {
                 showStatus("Nothing to export -- curate a video, click \"Generate rows\", then check it below.");
                 return;
