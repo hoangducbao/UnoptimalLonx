@@ -101,7 +101,7 @@ else:
     MAP_KEYFRAMES_DIR = Path(os.getenv("MAP_KEYFRAMES_DIR", str(_find_dir(["map-keyframes", "map_keyframes"], "D:/vids/map-keyframes/map-keyframes"))))
 
     THUMBNAIL_ROOT = Path(os.getenv("THUMBNAIL_ROOT", str(_find_dir(["keyframes"], "D:/University/Summ26/AICData/keyframes"))))
-    VIDEO_DIR = Path(os.getenv("VIDEO_DIR", str(_find_dir(["videos", "video"], "D:/University/Summ26/AICData/video"))))
+    VIDEO_DIR = Path(os.getenv("VIDEO_DIR", str(_find_dir(["degarr", "videos", "video", "videos_l21", "videos_l22", "videos_l23", "videos_l24", "videos_l25"], "D:/University/Summ26/AICData/video"))))
 
     INDEX_PREFIX = "routing101"
 

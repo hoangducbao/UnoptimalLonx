@@ -114,8 +114,80 @@ def thumbnail_disk_path(video_id: str, n) -> Path:
     return config.THUMBNAIL_ROOT / video_id / f"{int(n):03d}.jpg"
 
 
+_video_path_cache: dict = {}
+_all_video_files_index: dict = {}
+_has_indexed_kaggle_videos: bool = False
+
+
+def _build_kaggle_video_index():
+    global _has_indexed_kaggle_videos
+    if _has_indexed_kaggle_videos:
+        return
+    _has_indexed_kaggle_videos = True
+    input_root = Path("/kaggle/input")
+    if not input_root.exists():
+        return
+    # Scan /kaggle/input for all video files (mp4, mkv, webm, avi)
+    exts = {".mp4", ".mkv", ".webm", ".avi"}
+    for root, _, files in os.walk(input_root):
+        for f in files:
+            p = Path(root) / f
+            if p.suffix.lower() in exts:
+                _all_video_files_index[p.stem.lower()] = p
+
+
+def find_video_path(video_id: str) -> Path | None:
+    """Finds the actual video file path for a given video_id across flat directories,
+    nested lot directories (Videos_L23, L23, video/), or Kaggle input mounts (e.g. degarr)."""
+    if not video_id:
+        return None
+    vid_clean = str(video_id).strip()
+    vid_key = vid_clean.lower()
+    if vid_key in _video_path_cache:
+        return _video_path_cache[vid_key]
+
+    exts = [".mp4", ".mkv", ".webm", ".avi"]
+
+    # 1. Direct in config.VIDEO_DIR
+    if config.VIDEO_DIR and config.VIDEO_DIR.exists():
+        for ext in exts:
+            p = config.VIDEO_DIR / f"{vid_clean}{ext}"
+            if p.exists():
+                _video_path_cache[vid_key] = p
+                return p
+
+        # Check lot subfolders within config.VIDEO_DIR
+        lot_str = video_lot_str(vid_clean)
+        candidate_subdirs = [
+            config.VIDEO_DIR / lot_str,
+            config.VIDEO_DIR / f"Videos_{lot_str}",
+            config.VIDEO_DIR / f"Videos_{lot_str}" / "video",
+            config.VIDEO_DIR / "video" / lot_str,
+            config.VIDEO_DIR / "video",
+            config.VIDEO_DIR / "videos",
+        ]
+        for sdir in candidate_subdirs:
+            if sdir.exists():
+                for ext in exts:
+                    p = sdir / f"{vid_clean}{ext}"
+                    if p.exists():
+                        _video_path_cache[vid_key] = p
+                        return p
+
+    # 2. Check Kaggle /kaggle/input (datasets like degarr, aic2026-dataset, etc.)
+    if config.IS_KAGGLE or Path("/kaggle/input").exists():
+        _build_kaggle_video_index()
+        if vid_key in _all_video_files_index and _all_video_files_index[vid_key].exists():
+            res = _all_video_files_index[vid_key]
+            _video_path_cache[vid_key] = res
+            return res
+
+    _video_path_cache[vid_key] = None
+    return None
+
+
 def video_url(video_id: str) -> str:
-    return f"/media/video/{video_id}.mp4"
+    return f"/api/playback/stream/{video_id}"
 
 
 _map_keyframes_cache: dict = {}
@@ -137,6 +209,30 @@ def load_map_keyframes(video_id: str):
         else:
             _map_keyframes_cache[video_id] = None
     return _map_keyframes_cache[video_id]
+
+
+def get_video_keyframes_meta(video_id: str) -> list:
+    """Returns a list of keyframe descriptors for video_id for frontend scrubber/fallback."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty:
+        return []
+    out = []
+    for _, r in mk.iterrows():
+        try:
+            n_val = int(r["n"])
+            pts_val = float(r.get("pts_time", 0.0))
+            fps_val = float(r.get("fps", 25.0))
+            frame_idx_val = int(r.get("frame_idx", n_val))
+            out.append({
+                "n": n_val,
+                "pts_time": pts_val,
+                "fps": fps_val,
+                "frame_idx": frame_idx_val,
+                "thumbnail_url": thumbnail_url(video_id, n_val),
+            })
+        except Exception:
+            continue
+    return out
 
 
 def nearest_keyframe_n_by_time(video_id: str, t: float):

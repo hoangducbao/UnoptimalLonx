@@ -104,48 +104,163 @@ function fmtTime(t) {
     return `${mm}:${ss}`;
 }
 
+function renderKeyframePlayer(wrap, timerEl, videoId, data, initialN, onExportReady) {
+    const keyframes = data.keyframes || [];
+    let currentIdx = keyframes.findIndex((k) => k.n === Number(initialN));
+    if (currentIdx === -1) currentIdx = 0;
+
+    let isPlaying = false;
+    let playInterval = null;
+
+    wrap.innerHTML = `
+      <div class="keyframe-player">
+        <div class="keyframe-player-img-wrap">
+          <img class="keyframe-player-img" id="kf-img" src="" alt="Keyframe Preview">
+        </div>
+        <div class="keyframe-controls-bar">
+          <button class="keyframe-ctrl-btn" id="kf-prev" title="Previous keyframe">◀</button>
+          <button class="keyframe-ctrl-btn" id="kf-play" title="Play / Pause Slideshow">▶</button>
+          <button class="keyframe-ctrl-btn" id="kf-next" title="Next keyframe">▶</button>
+          <input type="range" class="keyframe-slider" id="kf-slider" min="0" max="${Math.max(0, keyframes.length - 1)}" value="${currentIdx}">
+          <span id="kf-counter" style="font-size:0.8rem;color:#cbd5e1;white-space:nowrap;">${currentIdx + 1} / ${keyframes.length}</span>
+        </div>
+      </div>
+    `;
+
+    const img = wrap.querySelector("#kf-img");
+    const slider = wrap.querySelector("#kf-slider");
+    const counter = wrap.querySelector("#kf-counter");
+    const playBtn = wrap.querySelector("#kf-play");
+
+    function showKeyframe(idx) {
+        if (!keyframes.length) return;
+        currentIdx = Math.max(0, Math.min(idx, keyframes.length - 1));
+        const kf = keyframes[currentIdx];
+        img.src = kf.thumbnail_url;
+        slider.value = currentIdx;
+        counter.textContent = `${currentIdx + 1} / ${keyframes.length}`;
+        timerEl.textContent = `${fmtTime(kf.pts_time)} · frame ${kf.frame_idx || Math.round(kf.pts_time * kf.fps)}`;
+        if (onExportReady) {
+            onExportReady({ n: kf.n, frame_idx: kf.frame_idx || Math.round(kf.pts_time * kf.fps) });
+        }
+    }
+
+    wrap.querySelector("#kf-prev").onclick = () => {
+        stopSlideshow();
+        showKeyframe(currentIdx - 1);
+    };
+    wrap.querySelector("#kf-next").onclick = () => {
+        stopSlideshow();
+        showKeyframe(currentIdx + 1);
+    };
+    slider.oninput = () => {
+        stopSlideshow();
+        showKeyframe(parseInt(slider.value, 10));
+    };
+
+    function startSlideshow() {
+        isPlaying = true;
+        playBtn.textContent = "⏸";
+        playInterval = setInterval(() => {
+            if (currentIdx >= keyframes.length - 1) {
+                showKeyframe(0);
+            } else {
+                showKeyframe(currentIdx + 1);
+            }
+        }, 350);
+    }
+
+    function stopSlideshow() {
+        if (isPlaying) {
+            isPlaying = false;
+            playBtn.textContent = "▶";
+            clearInterval(playInterval);
+            playInterval = null;
+        }
+    }
+
+    playBtn.onclick = () => {
+        if (isPlaying) stopSlideshow();
+        else startSlideshow();
+    };
+
+    showKeyframe(currentIdx);
+}
+
 export async function openPlaybackDialog(videoId, n) {
     const body = document.createElement("div");
     body.innerHTML = `<div class="playback-layout">
-        <div class="playback-main" id="playback-video-wrap">Loading…</div>
+        <div class="playback-main" id="playback-video-wrap">
+          <div class="playback-container">
+            <div class="playback-loading">⏳ Loading video playback…</div>
+          </div>
+        </div>
         <div class="playback-info">
-          <div class="thumb-caption">${videoId} — frame ${n}</div>
+          <div class="thumb-caption"><b>${videoId}</b> — frame ${n || 1}</div>
           <div id="playback-timer" class="playback-timer">--:-- · frame --</div>
-          <button class="btn" id="playback-export-btn" style="margin-top:0.5rem;" title="Export the exact frame currently playing">★ Export this frame</button>
+          <div id="playback-mode-banner" style="margin-top:0.4rem;font-size:0.75rem;color:var(--text-muted);"></div>
+          <button class="btn" id="playback-export-btn" style="margin-top:0.5rem;width:100%;" title="Export the exact frame currently playing">★ Export this frame</button>
         </div>
       </div>`;
-    const { box } = openDialog(null, body);
+    const { box } = openDialog(null, body, { wide: true });
+
+    let currentExportPayload = { kind: "flat", video_id: videoId, n: n };
+    const timer = box.querySelector("#playback-timer");
+    const wrap = box.querySelector("#playback-video-wrap");
+    const modeBanner = box.querySelector("#playback-mode-banner");
+
+    box.querySelector("#playback-export-btn").onclick = () => {
+        openExportDialog(currentExportPayload);
+    };
 
     try {
         const data = await getPlayback(videoId, n);
-        const wrap = box.querySelector("#playback-video-wrap");
         wrap.innerHTML = "";
-        const video = document.createElement("video");
-        video.src = data.video_url + `#t=${data.start_time}`;
-        video.controls = true;
-        video.autoplay = false;
-        wrap.append(video);
 
-        // Live realtime frame timer -- same fps*currentTime readout TRAKE's
-        // marker-bar playback uses (ui/app.py:1440-1442's `timeupdate`
-        // handler), just without the marker bar since there's only one
-        // frame here.
-        const timer = box.querySelector("#playback-timer");
-        video.addEventListener("timeupdate", () => {
-            timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
-        });
+        if (data.has_video) {
+            modeBanner.textContent = "🎥 Video playback mode";
+            const video = document.createElement("video");
+            video.src = data.video_url;
+            video.controls = true;
+            video.autoplay = false;
+            video.preload = "metadata";
+            video.playsInline = true;
 
-        // Exports whatever real frame the video is currently at (paused or
-        // not), computed fresh at click time -- not read off the timer's
-        // text, which is just a display of the same arithmetic. No
-        // keyframe n involved at all, so this always opens as a TRAKE
-        // export (see export-ui.js's {kind:"frame"} handling).
-        box.querySelector("#playback-export-btn").onclick = () => {
-            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
-        };
+            video.addEventListener("loadedmetadata", () => {
+                if (data.start_time && isFinite(data.start_time) && data.start_time > 0) {
+                    video.currentTime = data.start_time;
+                }
+                timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
+            });
+
+            video.addEventListener("timeupdate", () => {
+                const curFrame = Math.round(video.currentTime * data.fps);
+                timer.textContent = `${fmtTime(video.currentTime)} · frame ${curFrame}`;
+                currentExportPayload = { kind: "frame", video_id: videoId, frame_idx: curFrame };
+            });
+
+            video.onerror = () => {
+                // If MP4 streaming fails, gracefully fallback to keyframe scrubber
+                modeBanner.innerHTML = `<span style="color:#e67e22;">⚠️ Video stream unavailable. Keyframe preview active.</span>`;
+                wrap.innerHTML = "";
+                renderKeyframePlayer(wrap, timer, videoId, data, n, (kf) => {
+                    currentExportPayload = { kind: "flat", video_id: videoId, n: kf.n, frame_idx: kf.frame_idx };
+                });
+            };
+
+            const container = document.createElement("div");
+            container.className = "playback-container";
+            container.append(video);
+            wrap.append(container);
+        } else {
+            // No video file on disk: immediate fallback to Keyframe Timeline Scrubber
+            modeBanner.innerHTML = `<span style="color:#3b82f6;">🖼️ Keyframe timeline preview (MP4 not on disk)</span>`;
+            renderKeyframePlayer(wrap, timer, videoId, data, n, (kf) => {
+                currentExportPayload = { kind: "flat", video_id: videoId, n: kf.n, frame_idx: kf.frame_idx };
+            });
+        }
     } catch (e) {
-        box.querySelector("#playback-video-wrap").innerHTML =
-            `<div class="status-banner error">${e.message}</div>`;
+        wrap.innerHTML = `<div class="status-banner error">${e.message}</div>`;
     }
 }
 
@@ -281,40 +396,69 @@ export async function openTrakePlaybackDialog(videoId, events) {
     try {
         const data = await getPlayback(videoId, matched[0].n);
         const wrap = box.querySelector("#trake-video-wrap");
-        wrap.innerHTML = "";
-        const video = document.createElement("video");
-        video.src = data.video_url + `#t=${matched[0].timestamp}`;
-        video.controls = true;
-        wrap.append(video);
-
         const bar = box.querySelector("#trake-marker-bar");
         const timer = box.querySelector("#trake-timer");
+        wrap.innerHTML = "";
 
-        function layoutMarkers() {
-            if (!video.duration || !isFinite(video.duration)) return;
-            bar.innerHTML = "";
-            for (const m of matched) {
-                const pct = Math.max(0, Math.min(100, (m.timestamp / video.duration) * 100));
-                const tick = document.createElement("div");
-                tick.className = "trake-marker-tick";
-                tick.title = `${m.label} @ ${m.timestamp.toFixed(2)}s`;
-                tick.textContent = m.label;
-                tick.style.left = pct + "%";
-                tick.addEventListener("click", () => { video.currentTime = m.timestamp; });
-                bar.append(tick);
-            }
-        }
-        video.addEventListener("loadedmetadata", layoutMarkers);
-        if (video.readyState >= 1) layoutMarkers();
-        video.addEventListener("timeupdate", () => {
-            timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
-        });
-
-        // Same "capture the real frame fresh at click time" pattern as
-        // openPlaybackDialog's own export button.
+        let currentExportPayload = { kind: "frame", video_id: videoId, frame_idx: Math.round(matched[0].timestamp * data.fps) };
         box.querySelector("#trake-export-btn").onclick = () => {
-            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+            openExportDialog(currentExportPayload);
         };
+
+        if (data.has_video) {
+            const video = document.createElement("video");
+            video.src = data.video_url;
+            video.controls = true;
+            video.preload = "metadata";
+            video.playsInline = true;
+
+            function layoutMarkers() {
+                if (!video.duration || !isFinite(video.duration)) return;
+                bar.innerHTML = "";
+                for (const m of matched) {
+                    const pct = Math.max(0, Math.min(100, (m.timestamp / video.duration) * 100));
+                    const tick = document.createElement("div");
+                    tick.className = "trake-marker-tick";
+                    tick.title = `${m.label} @ ${m.timestamp.toFixed(2)}s`;
+                    tick.textContent = m.label;
+                    tick.style.left = pct + "%";
+                    tick.addEventListener("click", () => { video.currentTime = m.timestamp; });
+                    bar.append(tick);
+                }
+            }
+
+            video.addEventListener("loadedmetadata", () => {
+                if (matched[0].timestamp && isFinite(matched[0].timestamp)) {
+                    video.currentTime = matched[0].timestamp;
+                }
+                layoutMarkers();
+            });
+            if (video.readyState >= 1) layoutMarkers();
+
+            video.addEventListener("timeupdate", () => {
+                const curFrame = Math.round(video.currentTime * data.fps);
+                timer.textContent = `${fmtTime(video.currentTime)} · frame ${curFrame}`;
+                currentExportPayload = { kind: "frame", video_id: videoId, frame_idx: curFrame };
+            });
+
+            video.onerror = () => {
+                bar.style.display = "none";
+                wrap.innerHTML = "";
+                renderKeyframePlayer(wrap, timer, videoId, data, matched[0].n, (kf) => {
+                    currentExportPayload = { kind: "frame", video_id: videoId, frame_idx: kf.frame_idx };
+                });
+            };
+
+            const container = document.createElement("div");
+            container.className = "playback-container";
+            container.append(video);
+            wrap.append(container);
+        } else {
+            bar.style.display = "none";
+            renderKeyframePlayer(wrap, timer, videoId, data, matched[0].n, (kf) => {
+                currentExportPayload = { kind: "frame", video_id: videoId, frame_idx: kf.frame_idx };
+            });
+        }
     } catch (e) {
         box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner error">${e.message}</div>`;
     }

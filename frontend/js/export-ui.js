@@ -492,15 +492,26 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             if (el("#trake-video-wrap") !== wrap) return; // panel torn down mid-fetch (query type switched away)
             s.trake.fps = data.fps;
             wrap.innerHTML = "";
-            const video = document.createElement("video");
-            video.src = data.video_url;
-            video.controls = true;
-            wrap.append(video);
-            s.trake.videoEl = video;
-            const timer = el("#trake-cur-timer");
-            video.addEventListener("timeupdate", () => {
-                timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * s.trake.fps)}`;
-            });
+            if (data.has_video) {
+                const video = document.createElement("video");
+                video.src = data.video_url;
+                video.controls = true;
+                video.preload = "metadata";
+                video.playsInline = true;
+                wrap.append(video);
+                s.trake.videoEl = video;
+                const timer = el("#trake-cur-timer");
+                video.addEventListener("timeupdate", () => {
+                    timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * s.trake.fps)}`;
+                });
+                video.onerror = () => {
+                    s.trake.videoEl = null;
+                    if (wrap) wrap.innerHTML = `<div class="status-banner warn">Video file stream unavailable for ${videoId}. Use keyframe export instead.</div>`;
+                };
+            } else {
+                s.trake.videoEl = null;
+                if (wrap) wrap.innerHTML = `<div class="status-banner warn">Video file .mp4 not found on disk for ${videoId}. Use keyframe export instead.</div>`;
+            }
         } catch (e) {
             s.trake.videoEl = null;
             if (wrap) wrap.innerHTML = `<div class="status-banner error">${e.message}</div>`;

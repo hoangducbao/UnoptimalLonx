@@ -483,25 +483,112 @@ button {
     align-items: flex-start;
     margin-top: 1.5rem; /* clears the absolutely-positioned close button, since there's no title to do that for us */
 }
-.playback-main { flex: 1 1 auto; min-width: 0; }
-.playback-info { flex: 0 0 220px; }
+.playback-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.playback-info { flex: 0 0 240px; }
 .playback-info .thumb-caption { margin-bottom: 0.5rem; }
 .playback-timer { font-family: monospace; font-size: 0.9rem; margin-top: 0.5rem; }
+
+.playback-container {
+    position: relative;
+    width: 100%;
+    min-height: 280px;
+    background: #0f1117;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.playback-container video {
+    display: block;
+    width: 100%;
+    max-height: 70vh;
+    border-radius: 4px;
+    background: #000;
+    outline: none;
+}
+
+.playback-loading {
+    color: #e2e8f0;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 2rem;
+}
+
+/* Keyframe Fallback Scrubber / Timeline Slideshow */
+.keyframe-player {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #0f1117;
+    border-radius: 6px;
+    padding: 0.5rem;
+}
+.keyframe-player-img-wrap {
+    width: 100%;
+    height: 400px;
+    max-height: 65vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.keyframe-player-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 2px;
+}
+.keyframe-controls-bar {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.2rem 0.4rem;
+}
+.keyframe-slider {
+    flex: 1;
+    cursor: pointer;
+}
+.keyframe-ctrl-btn {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8rem;
+    background: #232733;
+    color: #fff;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.keyframe-ctrl-btn:hover { background: #374151; }
 
 .dialog-box video {
     display: block;
     max-width: 100%;
-    max-height:75vh; /* bounds the video by height too, not just width -- otherwise a wide dialog scales it tall enough to push the timer/marker-bar/gaps info below the fold */
-    width: auto;
+    max-height: 75vh;
+    width: 100%;
     height: auto;
     margin: 0 auto;
     border-radius: 4px;
+    background: #000;
 }
 
 #trake-marker-bar {
     position: relative;
-    height: 18px;
-    margin: 4px 0 8px;
+    height: 20px;
+    margin: 6px 0 8px;
     background: rgba(127, 127, 127, 0.15);
     border-radius: 4px;
 }
@@ -514,5 +601,7 @@ button {
     font-size: 10px;
     padding: 0 4px;
     border-radius: 3px;
-    line-height: 18px;
+    line-height: 20px;
+    user-select: none;
 }
+.trake-marker-tick:hover { filter: brightness(1.2); }
