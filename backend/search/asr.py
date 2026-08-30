@@ -11,7 +11,7 @@ import pandas as pd
 from cachetools import TTLCache
 
 from .. import config
-from ..common import l2_normalize, nearest_keyframe_n_by_time, query_hash, video_id_from_filename
+from ..common import keyframe_timestamp, l2_normalize, nearest_keyframe_n_by_time, query_hash, video_id_from_filename
 from ..es_client import get_es_client
 from ..es_indexing import ensure_asr_fuzzy_index
 from ..models import is_image_query, siglip2_query_vec
@@ -149,3 +149,33 @@ def attach_keyframe_asr(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["n"] = ns
     return out
+
+
+_transcript_cache: dict = {}
+
+
+def _load_transcript(video_id: str):
+    """Per-video transcript segments (segment_id, start_sec, text), sorted
+    by start_sec -- same source file ensure_asr_fuzzy_index() bulk-indexes
+    from, read directly here instead of round-tripping through ES."""
+    if video_id not in _transcript_cache:
+        path = config.TRANSCRIPTS_DIR / f"{video_id}.csv"
+        _transcript_cache[video_id] = pd.read_csv(path).sort_values("start_sec").reset_index(drop=True) if path.exists() else None
+    return _transcript_cache[video_id]
+
+
+def transcript_for_frame(video_id: str, n) -> str:
+    """Reverse of the search-driven ASR legs above: given an arbitrary
+    keyframe (any signal's hit, not necessarily one ASR itself ranked),
+    find the transcript segment nearest that frame's timestamp. Backs
+    Mixed's "Show transcript" toggle, which needs ASR text under a frame
+    regardless of which sub-query actually ranked it."""
+    segs = _load_transcript(video_id)
+    if segs is None or segs.empty:
+        return None
+    ts, _fps = keyframe_timestamp(video_id, n)
+    if ts is None:
+        return None
+    idx = (segs["start_sec"] - ts).abs().idxmin()
+    text = segs.loc[idx, "text"]
+    return text if isinstance(text, str) else None

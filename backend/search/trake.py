@@ -1,14 +1,17 @@
 """
 backend/search/trake.py -- TRAKE: an ordered list of event sub-queries
-(each with its own text + one of the other six signals), find videos where
-every event's best-matching frame occurs in the declared order. Ported
-from ui/app.py:980-1113 (trake_search_event, trake_rank_videos). Reuses
-each signal's existing search + RRF pipeline UNSCOPED by default (no
-video/lot filter -- TRAKE searches the whole corpus per event, on purpose,
-though the caller may still pass a filter to narrow every event the same
-way the UI lets a user do for other signals), then adds a video-level
-coverage/order/score layer on top. No new embedding models, no new
-per-signal fusion logic.
+(each with its own text + one of Keyframe/ASR/Caption/OCR/Mixed), find
+videos where every event's best-matching frame occurs in the declared
+order, plus an optional context (E0) query always matched via Summary --
+reserved for that role since Summary is video-level (always resolves to
+frame 1, see attach_keyframe_summary), not one of the events' own signal
+choices. Ported from ui/app.py:980-1113 (trake_search_event,
+trake_rank_videos). Reuses each signal's existing search + RRF pipeline
+UNSCOPED by default (no video/lot filter -- TRAKE searches the whole
+corpus per event, on purpose, though the caller may still pass a filter to
+narrow every event the same way the UI lets a user do for other signals),
+then adds a video-level coverage/order/score layer on top. No new
+embedding models, no new per-signal fusion logic.
 """
 
 import pandas as pd

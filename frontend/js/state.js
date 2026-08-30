@@ -94,11 +94,33 @@ export function saveMixedConfig() {
 // ui/app.py:1615.
 // ---------------------------------------------------------------------------
 
-export const TRAKE_EVENT_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR", "Summary", "Mixed"];
+// Summary is video-level (one paragraph per video, always resolves to
+// frame 1 -- see attach_keyframe_summary in backend/search/summary.py), so
+// it's reserved for the context row's whole-video boost query and left out
+// of the per-event signal choices below (an ordered event pinned to frame
+// 1 mostly just breaks TRAKE's strict-order check anyway).
+export const TRAKE_EVENT_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR", "Mixed"];
 
 export const trakeState = {
+    // Context's signal is fixed to "Summary" -- no dropdown, see trake.js's
+    // context row -- not one of the user-facing TRAKE_EVENT_SIGNALS above.
     context: { text: "", signal: "Summary" },
     events: [{ id: 0, text: "", signal: "Keyframe" }],
+    nextId: 1,
+};
+
+// ---------------------------------------------------------------------------
+// Mixed search state -- many independent sub-queries, each with its own
+// text + single signal (no nested "Mixed", no image sub-queries -- unlike
+// TRAKE's events, these aren't ordered and aren't required to all match).
+// Combined via weighted RRF, weight (0-3) chosen per sub-query below.
+// ---------------------------------------------------------------------------
+
+// Summary excluded here too, same reasoning as TRAKE_EVENT_SIGNALS above.
+export const MIXED_QUERY_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR"];
+
+export const mixedQueryState = {
+    queries: [{ id: 0, text: "", signal: "Keyframe", weight: 1 }],
     nextId: 1,
 };
 

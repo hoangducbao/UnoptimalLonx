@@ -1,13 +1,22 @@
 """
-backend/search/mixed.py -- Mixed signal: a user-weighted RRF across
-Keyframe/ASR/Caption/OCR (not Summary -- video-level, kept out of this
-signal). Ported from ui/app.py:896-978. For each signal, only its
-*checked* legs contribute -- 2 checked legs are fused with that signal's
-own existing rrf_fuse_* first (so Mixed reuses the exact same per-signal
-RRF already used standalone), 1 checked leg is used at its own raw rank, 0
-checked legs (or a 0 weight) drop the signal entirely. The resulting
-per-signal rank lists are then combined with a weighted RRF, keyed on
-(video_id, n) since every signal is normalized to that shape already.
+backend/search/mixed.py -- the legs+weights composite signal: a
+user-weighted RRF across Keyframe/ASR/Caption/OCR (not Summary --
+video-level, kept out of this signal). Ported from ui/app.py:896-978. For
+each signal, only its *checked* legs contribute -- 2 checked legs are
+fused with that signal's own existing rrf_fuse_* first (so this composite
+reuses the exact same per-signal RRF already used standalone), 1 checked
+leg is used at its own raw rank, 0 checked legs (or a 0 weight) drop the
+signal entirely. The resulting per-signal rank lists are then combined
+with a weighted RRF, keyed on (video_id, n) since every signal is
+normalized to that shape already.
+
+The standalone "Mixed" tab (`backend/routes/search.py::search_mixed`) no
+longer uses `_mixed_*_df` below -- it moved to many independent
+single-signal sub-queries (see that route's own docstring) -- but does
+reuse `rrf_fuse_weighted()`, keyed by sub-query index instead of signal
+name. `_mixed_*_df` themselves now only back TRAKE's per-event "Mixed"
+signal option (`backend/search/trake.py::trake_search_event`), which still
+works exactly as this module describes.
 """
 
 import numpy as np

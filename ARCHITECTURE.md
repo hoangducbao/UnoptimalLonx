@@ -42,9 +42,9 @@ index/                  generated FAISS indices + CSV metadata (git-ignored), re
 | Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | one row per keyframe |
 | OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |
 | Summary | SigLIP2-summary, Elasticsearch fuzzy, RRF | video-level: one result per video |
-| Mixed | weighted RRF across Keyframe/ASR/Caption/OCR | per-signal on/off leg toggles + adjustable weights |
+| Mixed | many independent sub-queries (Keyframe/ASR/Caption/OCR), fused by weighted RRF | one query + one signal + one weight (0-3) per sub-query, add/remove freely; optional "Show transcript" attaches ASR text under every result regardless of which sub-query ranked it |
 | Hierarchy | SigLIP2 only | frame search grouped by video, drilled down per video |
-| TRAKE | reuses the other signals, one per event | ordered multi-event search: find videos where every event's best match occurs in order |
+| TRAKE | reuses the other signals, one per event | ordered multi-event search: find videos where every event's best match occurs in order; optional context (E0) query is always matched via Summary, boosting a video's score independent of the ordering constraint |
 
 Every leg normalizes to `{video_id, n, rank, score_label, score_val, text}`
 (`backend/common.py::df_to_results`) before it reaches the frontend, so one
