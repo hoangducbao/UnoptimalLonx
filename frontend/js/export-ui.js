@@ -47,6 +47,7 @@
 //     for the backend's flat CSV path, which this trigger doesn't have).
 
 import { exportCsv, getExportFrame, getExportNeighbors, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
+import { fmtTime } from "./format.js";
 
 const NEIGHBOUR_COUNT_EXPORT = 10; // fixed row-generation window, independent of preview expand state
 const PREVIEW_PAGE = 12; // 3x4 grid per preview section (export-preview-grid is 4 columns wide)
@@ -443,12 +444,6 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
 
     // --- TRAKE: curate one video's events -> cache its generated rows ->
     // merge however many cached videos into the final export -----------
-
-    function fmtTime(t) {
-        const mm = String(Math.floor(t / 60)).padStart(2, "0");
-        const ss = (t % 60).toFixed(2).padStart(5, "0");
-        return `${mm}:${ss}`;
-    }
 
     // Grabs a JPEG data URL of whatever frame `video` is showing right
     // now -- this is the "cache the thumbnail at add-time" half of the

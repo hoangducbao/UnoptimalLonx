@@ -7,7 +7,7 @@ rewrite adds ASR/Caption/OCR/Summary alongside Phase 1's Keyframe --
 Mixed/TRAKE/Hierarchy land in later phases, same module.
 """
 
-from typing import Dict, List, Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel

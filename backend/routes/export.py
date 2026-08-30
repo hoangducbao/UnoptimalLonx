@@ -79,7 +79,7 @@ def _safe_filename(name: str) -> str:
 def export_csv(body: ExportRequest):
     try:
         rows = export_mod.generate_export(
-            body.query_type, body.candidates, body.mode,
+            body.candidates, body.mode,
             confirmed=body.confirmed, answers=body.answers,
             neighbour_count=body.neighbour_count, max_rows=body.max_rows,
         )

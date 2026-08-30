@@ -34,7 +34,7 @@ def build_frame_index(glob_pattern: str):
     all_vecs = []
     lookup_rows = []
     for npy_path in npy_paths:
-        video_id = video_id_from_filename(npy_path, ("_viclip768", "_siglip768", "_siglip2"))
+        video_id = video_id_from_filename(npy_path, ("_siglip768", "_siglip2"))
         vecs = np.load(npy_path).astype("float32")
         if vecs.ndim == 1:
             vecs = vecs.reshape(1, -1)
