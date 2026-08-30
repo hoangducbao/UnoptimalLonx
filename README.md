@@ -32,7 +32,6 @@ export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
   AICDataExtracted/ocr/                             per-frame OCR text (bulk-indexed into ES)
   AICDataExtracted/summaries/ + summary_embed/       one-paragraph video summaries
   AICDataExtracted/filtered_object/ (+class_vocab.csv)  per-frame OD detections + vocabulary
-  AICData/clip-features-32/*.npy                    CLIP ViT-B/32 frame embeddings (512-d, fp16)
   AICData/map-keyframes/*.csv                       per-frame timestamps + native frame_idx
   AICData/keyframes/{video_id}/{n:03d}.jpg           thumbnails
   AICData/video/{video_id}.mp4                       source video (playback dialogs)
@@ -61,15 +60,12 @@ export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
 
 2. **Point the app at your data.** All data paths are hardcoded module
    constants (single-team local scaffold, no env-file layer) -- edit
-   these two files to match wherever you staged the folders above:
-   - `backend/config.py` -- every `*_DIR`/`*_GLOB` constant near the top
-     (`FRAME_SIGLIP2_GLOB`, `ASR_EMBED_DIR`, `TRANSCRIPTS_DIR`, ...,
-     `MAP_KEYFRAMES_DIR`, `THUMBNAIL_ROOT`, `VIDEO_DIR`). They're all
-     absolute paths under one root today (`D:/University/Summ26/AICData*`)
-     -- if you mirror that same layout, it's a one-line prefix change per
-     platform, not per constant.
-   - `pipeline/config.py` -- just a model name, nothing to change here
-     unless you're swapping the CLIP text tower.
+   `backend/config.py`'s every `*_DIR`/`*_GLOB` constant near the top
+   (`FRAME_SIGLIP2_GLOB`, `ASR_EMBED_DIR`, `TRANSCRIPTS_DIR`, ...,
+   `MAP_KEYFRAMES_DIR`, `THUMBNAIL_ROOT`, `VIDEO_DIR`) to match wherever
+   you staged the folders above. They're all absolute paths under one root
+   today (`D:/University/Summ26/AICData*`) -- if you mirror that same
+   layout, it's a one-line prefix change per platform, not per constant.
 
 3. **Start Elasticsearch** (Docker):
    ```
@@ -139,7 +135,7 @@ Elasticsearch, and no public port for a browser to reach.
    `torch`; this just fills in what's missing):
    ```
    !pip install -q fastapi uvicorn python-multipart cachetools \
-       faiss-cpu elasticsearch multilingual-clip timm
+       faiss-cpu elasticsearch timm
    ```
 
 4. **Get Elasticsearch running.** Kaggle notebooks don't run a Docker
@@ -194,7 +190,7 @@ Elasticsearch, and no public port for a browser to reach.
 7. **Optional: turn on a GPU** (Settings → Accelerator → GPU T4 x2 or
    P100) before running -- `backend/models.py` auto-detects
    `torch.cuda.is_available()`, no code change needed, and it meaningfully
-   speeds up SigLIP2/CLIP inference over CPU-only.
+   speeds up SigLIP2 inference over CPU-only.
 
 ## Verifying it's working
 

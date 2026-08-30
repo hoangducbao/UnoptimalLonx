@@ -26,8 +26,6 @@ frontend/
   js/signals/          one module per signal, same render/search shape
   css/style.css
 pipeline/
-  config.py             constants shared by the text encoders (currently: the CLIP text-tower model name)
-  clip_encoder.py       Multilingual-CLIP text tower (paired with CLIP ViT-B/32 image features)
   build_class_vocab.py  builds the OD class vocabulary od_filter.py matches against
   *.csv                 per-lot metadata extracted upstream (metadata_filter.py's source)
 index/                  generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
@@ -37,7 +35,7 @@ index/                  generated FAISS indices + CSV metadata (git-ignored), re
 
 | Signal | Legs | Notes |
 |---|---|---|
-| Keyframe | SigLIP2, CLIP ViT-B/32, RRF | frame embeddings |
+| Keyframe | SigLIP2 only | frame embeddings; CLIP ViT-B/32 + its Multilingual-CLIP query-time text encoder (XLM-RoBERTa-large) were removed entirely -- that text tower alone cost ~4.6GB RAM lazily loaded, dwarfing every other model/index in this system combined |
 | ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | transcript segments mapped to nearest keyframe |
 | Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | one row per keyframe |
 | OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |

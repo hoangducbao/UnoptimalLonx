@@ -52,14 +52,14 @@ window.__routing101.handoffs = window.__routing101.handoffs || new Map();
 
 export const MIXED_SIGNAL_NAMES = ["Keyframe", "ASR", "Caption", "OCR"];
 export const MIXED_LEG_DEFS = {
-    Keyframe: [["kf_siglip2", "SigLIP2"], ["kf_clip", "CLIP"]],
+    // Keyframe intentionally omitted -- CLIP was removed entirely, leaving
+    // a single SigLIP2 leg, nothing to choose (like OCR below).
     ASR: [["asr_siglip", "SigLIP2 ASR"], ["asr_fuzzy", "Fuzzy ASR"]],
     Caption: [["cap_siglip", "SigLIP2 Caption"], ["cap_fuzzy", "Fuzzy Caption"]],
     // OCR intentionally omitted -- single fuzzy-only leg, nothing to choose.
 };
 export const MIXED_DEFAULT_WEIGHTS = Object.fromEntries(MIXED_SIGNAL_NAMES.map((n) => [n, 1]));
 export const MIXED_DEFAULT_LEGS = {
-    kf_siglip2: true, kf_clip: true,
     asr_siglip: false, asr_fuzzy: true,
     cap_siglip: false, cap_fuzzy: true,
 };

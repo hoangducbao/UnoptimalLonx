@@ -29,9 +29,8 @@ from .query_image import resolve_query
 router = APIRouter()
 
 # Shared skip-message text -- identical wording to ui/app.py's st.caption()
-# calls (ui/app.py:1986, 1992, 2016-2017, 2042-2043, 2079-2080) so the API
-# response reads the same regardless of which signal it came from.
-_SKIP_SIGLIP2_ONLY = "Skipped — picture queries are SigLIP2-only."
+# calls (ui/app.py:2016-2017, 2042-2043, 2079-2080) so the API response
+# reads the same regardless of which signal it came from.
 _SKIP_NOTHING_TO_FUSE = "Skipped — picture queries only ever have one active leg (SigLIP2), nothing to fuse."
 
 
@@ -39,12 +38,6 @@ class LegResult(BaseModel):
     skipped: Optional[str] = None
     warning: Optional[str] = None
     results: list = []
-
-
-class KeyframeLegs(BaseModel):
-    siglip2: bool = True
-    clip: bool = True
-    rrf: bool = True
 
 
 class KeyframeSearchRequest(BaseModel):
@@ -57,51 +50,30 @@ class KeyframeSearchRequest(BaseModel):
     od_filter: str = ""
     facet_field: str = ""
     facet_value: str = ""
-    legs: KeyframeLegs = KeyframeLegs()
 
 
 class KeyframeSearchResponse(BaseModel):
-    siglip2: Optional[LegResult] = None
-    clip: Optional[LegResult] = None
-    rrf: Optional[LegResult] = None
+    warning: Optional[str] = None
+    results: list = []
 
 
+# Keyframe is SigLIP2-only -- its CLIP ViT-B/32 leg (and the Multilingual-CLIP
+# query-time text encoder behind it) was removed entirely, see
+# backend/search/keyframe.py's docstring. No legs to choose, no RRF to fuse
+# -- same single-leg shape as OCR below.
 @router.post("/api/search/keyframe", response_model=KeyframeSearchResponse)
 def search_keyframe(body: KeyframeSearchRequest):
     query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
-    image_query = is_image_query(query)
     od_matched, od_unmatched = od.match_classes(body.od_filter)
     od_warning = od.unmatched_warning(od_unmatched)
 
-    siglip2_df = clip_df = None
-    if body.legs.siglip2 or body.legs.rrf:
-        siglip2_df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), body.video_filter, lot_filter)
-        siglip2_df = md.apply_facet_filter(siglip2_df, body.facet_field, body.facet_value)
-    if body.legs.clip or body.legs.rrf:
-        clip_df = apply_filters(kf.search_clip_frame(query, k=fetch_k), body.video_filter, lot_filter)
-        clip_df = md.apply_facet_filter(clip_df, body.facet_field, body.facet_value)
-
-    resp = KeyframeSearchResponse()
-    if body.legs.siglip2:
-        filtered = od.apply_od_filter(siglip2_df, od_matched)
-        resp.siglip2 = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
-    if body.legs.clip:
-        if image_query:
-            resp.clip = LegResult(skipped="Skipped — picture queries are SigLIP2-only.")
-        else:
-            filtered = od.apply_od_filter(clip_df, od_matched)
-            resp.clip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
-    if body.legs.rrf:
-        if image_query:
-            resp.rrf = LegResult(skipped=_SKIP_NOTHING_TO_FUSE)
-        else:
-            fused = kf.rrf_fuse_frame([siglip2_df, clip_df], top_n=fetch_k)
-            fused = od.apply_od_filter(fused, od_matched)
-            resp.rrf = LegResult(warning=od_warning, results=df_to_results(fused.head(top_k), "rrf_score"))
-    return resp
+    df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), body.video_filter, lot_filter)
+    df = md.apply_facet_filter(df, body.facet_field, body.facet_value)
+    filtered = od.apply_od_filter(df, od_matched)
+    return KeyframeSearchResponse(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
 
 
 # ---------------------------------------------------------------------------

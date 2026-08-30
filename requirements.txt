@@ -14,12 +14,6 @@ pillow
 
 tqdm>=4.60
 
-# clip_vitb32 backend (pipeline/clip_encoder.py) -- Multilingual-CLIP's text
-# tower, paired with the pre-extracted AICData/clip-features-32/*.npy
-# (OpenAI ViT-B/32 image tower). sentencepiece/huggingface_hub come along
-# transitively but are pinned implicitly by these two.
-multilingual-clip==1.0.10
-
 # ASR / Caption fuzzy legs (backend/search/asr.py, caption.py) -- bulk-indexes
 # transcript/caption text into a local Elasticsearch and runs a fuzzy match
 # query against it.

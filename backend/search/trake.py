@@ -46,10 +46,8 @@ def trake_search_event(query: str, signal: str, fetch_k: int, video_filter: str 
         return md.apply_facet_filter(apply_filters(df, video_filter, lot_filter), facet_field, facet_value)
 
     if signal == "Keyframe":
-        siglip2_df = _scoped(kf.search_siglip2_frame(query, k=fetch_k))
-        clip_df = _scoped(kf.search_clip_frame(query, k=fetch_k))
-        df = kf.rrf_fuse_frame([siglip2_df, clip_df], top_n=fetch_k)
-        return _EMPTY if df.empty else df.rename(columns={"rrf_score": "score"})[["video_id", "n", "rank", "score"]]
+        df = _scoped(kf.search_siglip2_frame(query, k=fetch_k))
+        return _EMPTY if df is None or df.empty else df[["video_id", "n", "rank", "score"]]
 
     if signal == "ASR":
         siglip_df = _scoped(asr_mod.search_siglip_asr(query, k=fetch_k))
@@ -88,7 +86,7 @@ def trake_search_event(query: str, signal: str, fetch_k: int, video_filter: str 
         legs = mixed_legs or {}
         signal_dfs = {}
         if weights.get("Keyframe", 0):
-            signal_dfs["Keyframe"] = mixed_mod._mixed_keyframe_df(query, fetch_k, video_filter, lot_filter, legs)
+            signal_dfs["Keyframe"] = mixed_mod._mixed_keyframe_df(query, fetch_k, video_filter, lot_filter)
         if weights.get("ASR", 0):
             signal_dfs["ASR"] = mixed_mod._mixed_asr_df(query, fetch_k, video_filter, lot_filter, legs)
         if weights.get("Caption", 0):

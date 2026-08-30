@@ -20,7 +20,6 @@ TOP_G_DEFAULT = 5   # Hierarchy Search: frames kept per video after drill-down (
 SIGLIP2_MODEL_ID = "google/siglip2-base-patch16-384"
 
 FRAME_SIGLIP2_GLOB = "D:/University/Summ26/AICDataExtracted/siglib_embed/*.npy"
-FRAME_CLIP_GLOB = "D:/University/Summ26/AICData/clip-features-32/*.npy"
 
 ASR_EMBED_DIR = Path("D:/University/Summ26/AICDataExtracted/transcript_embed")  # was asr_embed
 TRANSCRIPTS_DIR = Path("D:/University/Summ26/AICDataExtracted/transcripts")

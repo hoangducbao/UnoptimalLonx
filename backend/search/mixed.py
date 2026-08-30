@@ -1,14 +1,18 @@
 """
 backend/search/mixed.py -- the legs+weights composite signal: a
 user-weighted RRF across Keyframe/ASR/Caption/OCR (not Summary --
-video-level, kept out of this signal). Ported from ui/app.py:896-978. For
-each signal, only its *checked* legs contribute -- 2 checked legs are
-fused with that signal's own existing rrf_fuse_* first (so this composite
-reuses the exact same per-signal RRF already used standalone), 1 checked
-leg is used at its own raw rank, 0 checked legs (or a 0 weight) drop the
-signal entirely. The resulting per-signal rank lists are then combined
-with a weighted RRF, keyed on (video_id, n) since every signal is
-normalized to that shape already.
+video-level, kept out of this signal). Ported from ui/app.py:896-978.
+Keyframe and OCR have no leg choice -- Keyframe's CLIP leg was removed
+entirely (see backend/search/keyframe.py), leaving a single SigLIP2 leg;
+OCR was always fuzzy-only -- so both are used at their own raw rank
+whenever their weight is > 0. ASR/Caption still offer 2 legs each: only
+their *checked* legs contribute, 2 checked legs are fused with that
+signal's own existing rrf_fuse_* first (so this composite reuses the exact
+same per-signal RRF already used standalone), 1 checked leg is used at its
+own raw rank, 0 checked legs (or a 0 weight) drop the signal entirely. The
+resulting per-signal rank lists are then combined with a weighted RRF,
+keyed on (video_id, n) since every signal is normalized to that shape
+already.
 
 The standalone "Mixed" tab (`backend/routes/search.py::search_mixed`) no
 longer uses `_mixed_*_df` below -- it moved to many independent
@@ -30,20 +34,16 @@ from . import keyframe as kf
 from . import ocr as ocr_mod
 
 
-def _mixed_keyframe_df(query, fetch_k, video_filter, lot_filter, legs) -> pd.DataFrame:
-    named = {}
-    if legs.get("kf_siglip2"):
-        named["siglip2"] = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), video_filter, lot_filter)
-    if legs.get("kf_clip"):
-        named["clip"] = apply_filters(kf.search_clip_frame(query, k=fetch_k), video_filter, lot_filter)
-    if not named:
+def _mixed_keyframe_df(query, fetch_k, video_filter, lot_filter) -> pd.DataFrame:
+    """Keyframe has no leg choice -- CLIP was removed, so its single
+    SigLIP2 leg is used whenever its weight is > 0 (same shape as
+    _mixed_ocr_df below)."""
+    df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), video_filter, lot_filter)
+    if df is None or df.empty:
         return None
-    if len(named) == 1:
-        df = next(iter(named.values())).copy()
-        df["n"] = df["frame_id"] + 1
-    else:
-        df = kf.rrf_fuse_frame(list(named.values()), top_n=fetch_k)
-    return df[["video_id", "n", "rank"]] if df is not None and not df.empty else None
+    df = df.copy()
+    df["n"] = df["frame_id"] + 1
+    return df[["video_id", "n", "rank"]]
 
 
 def _mixed_asr_df(query, fetch_k, video_filter, lot_filter, legs) -> pd.DataFrame:
