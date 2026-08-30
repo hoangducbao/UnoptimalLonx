@@ -18,7 +18,6 @@ ui/app.py:1132-1179 (hierarchy_expand_group).
 import pandas as pd
 from PIL import Image
 
-from .. import config
 from .. import metadata_filter as md
 from ..common import apply_filters, df_to_results, thumbnail_disk_path
 from . import keyframe as kf

@@ -84,7 +84,7 @@ def nearest_keyframes_by_time(video_id: str, center_n: int, count: int) -> list:
     return valid_ns[:count]
 
 
-def generate_export(query_type: str, candidates: list, mode: str,
+def generate_export(candidates: list, mode: str,
                      confirmed: Optional[dict] = None, answers: Optional[list] = None,
                      neighbour_count: int = DEFAULT_NEIGHBOUR_COUNT, max_rows: int = 99) -> list:
     """Rank/dedup into <=max_rows rows for one query's submission CSV.

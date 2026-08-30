@@ -5,6 +5,7 @@
 // own phases, same file.
 
 import { getNeighbors, getPlayback } from "./api.js";
+import { fmtTime } from "./format.js";
 // export-dialog.js now just opens the Export CSV tab (frontend/export.html,
 // see its own header) rather than a modal built from openDialog() here --
 // no circular import with this file any more.
@@ -96,12 +97,6 @@ export async function openNeighborsDialog(videoId, centerN) {
     };
 
     await refresh();
-}
-
-function fmtTime(t) {
-    const mm = String(Math.floor(t / 60)).padStart(2, "0");
-    const ss = (t % 60).toFixed(2).padStart(5, "0");
-    return `${mm}:${ss}`;
 }
 
 export async function openPlaybackDialog(videoId, n) {

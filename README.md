@@ -124,8 +124,8 @@ Elasticsearch, and no public port for a browser to reach.
    it to your notebook. It mounts read-only under
    `/kaggle/input/<dataset-slug>/...`.
 
-2. **Point the app at Kaggle's paths.** Same two files as Track A step 2
-   (`backend/config.py`, `pipeline/config.py`), just pointed at
+2. **Point the app at Kaggle's paths.** Same file as Track A step 2
+   (`backend/config.py`), just pointed at
    `/kaggle/input/<dataset-slug>/...` instead of the `D:/...` paths.
    `INDEX_DIR`/`SUMMARY_EMBED_DIR` (under `REPO_ROOT`, i.e. wherever you
    `!git clone`'d the repo inside the notebook) are fine as-is -- they're
@@ -135,7 +135,7 @@ Elasticsearch, and no public port for a browser to reach.
    `torch`; this just fills in what's missing):
    ```
    !pip install -q fastapi uvicorn python-multipart cachetools \
-       faiss-cpu elasticsearch timm
+       faiss-cpu elasticsearch
    ```
 
 4. **Get Elasticsearch running.** Kaggle notebooks don't run a Docker

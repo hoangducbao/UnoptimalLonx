@@ -8,8 +8,6 @@ torch>=2.8.0
 transformers>=4.57.0
 pillow
 
-tqdm>=4.60
-
 # ASR / Caption fuzzy legs (backend/search/asr.py, caption.py) -- bulk-indexes
 # transcript/caption text into a local Elasticsearch and runs a fuzzy match
 # query against it.
