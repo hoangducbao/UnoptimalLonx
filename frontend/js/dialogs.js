@@ -1,6 +1,8 @@
 // frontend/js/dialogs.js -- modal dialogs. Phase 1: "Nearby frames" (ports
 // ui/app.py's show_neighbors, ui/app.py:1334-1360) and single-frame
-// playback (ports frame_playback_dialog, ui/app.py:1363-1376). TRAKE's
+// playback (ports frame_playback_dialog, ui/app.py:1363-1376), the latter
+// now also carrying a one-tick marker bar (same mechanics as TRAKE's,
+// marking the keyframe chosen before playback). TRAKE's own multi-event
 // marker-bar playback and the Mixed change-weights dialog land in their
 // own phases, same file.
 
@@ -14,6 +16,7 @@ import {
     getNeighborExtra, MIXED_DEFAULT_LEGS, MIXED_DEFAULT_WEIGHTS,
     MIXED_LEG_DEFS, MIXED_SIGNAL_NAMES, mixedConfig, saveMixedConfig,
 } from "./state.js";
+import { applyVideoPrefs, bindSpeedShortcut } from "./video-controls.js";
 
 const root = document.getElementById("dialog-root");
 
@@ -102,10 +105,14 @@ export async function openNeighborsDialog(videoId, centerN) {
 export async function openPlaybackDialog(videoId, n) {
     const body = document.createElement("div");
     body.innerHTML = `<div class="playback-layout">
-        <div class="playback-main" id="playback-video-wrap">Loading…</div>
+        <div class="playback-main">
+          <div id="playback-video-wrap">Loading…</div>
+          <div id="playback-marker-bar"></div>
+        </div>
         <div class="playback-info">
           <div class="thumb-caption">${videoId} — frame ${n}</div>
           <div id="playback-timer" class="playback-timer">--:-- · frame --</div>
+          <div id="playback-speed" class="playback-speed" title="&lt; / , slower, &gt; / . faster, 0 resets to 1x">1x</div>
           <button class="btn" id="playback-export-btn" style="margin-top:0.5rem;" title="Export the exact frame currently playing">★ Export this frame</button>
         </div>
       </div>`;
@@ -120,15 +127,36 @@ export async function openPlaybackDialog(videoId, n) {
         video.controls = true;
         video.autoplay = false;
         wrap.append(video);
+        applyVideoPrefs(video);
+        bindSpeedShortcut(video, box, box.querySelector("#playback-speed"));
 
         // Live realtime frame timer -- same fps*currentTime readout TRAKE's
         // marker-bar playback uses (ui/app.py:1440-1442's `timeupdate`
-        // handler), just without the marker bar since there's only one
-        // frame here.
+        // handler).
         const timer = box.querySelector("#playback-timer");
         video.addEventListener("timeupdate", () => {
             timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * data.fps)}`;
         });
+
+        // Single-tick marker bar, same layout/click-to-seek mechanics as
+        // TRAKE's #trake-marker-bar, just with exactly one tick: the
+        // keyframe (`n`) that was chosen before opening this dialog, at
+        // data.start_time.
+        const bar = box.querySelector("#playback-marker-bar");
+        function layoutMarker() {
+            if (!video.duration || !isFinite(video.duration)) return;
+            bar.innerHTML = "";
+            const pct = Math.max(0, Math.min(100, (data.start_time / video.duration) * 100));
+            const tick = document.createElement("div");
+            tick.className = "trake-marker-tick";
+            tick.title = `frame ${n} @ ${data.start_time.toFixed(2)}s`;
+            tick.textContent = `frame ${n}`;
+            tick.style.left = pct + "%";
+            tick.addEventListener("click", () => { video.currentTime = data.start_time; });
+            bar.append(tick);
+        }
+        video.addEventListener("loadedmetadata", layoutMarker);
+        if (video.readyState >= 1) layoutMarker();
 
         // Exports whatever real frame the video is currently at (paused or
         // not), computed fresh at click time -- not read off the timer's
@@ -244,6 +272,7 @@ export async function openTrakePlaybackDialog(videoId, events) {
         <div class="playback-info">
           <div class="thumb-caption">${videoId}</div>
           <div id="trake-timer" class="playback-timer">--:-- · frame --</div>
+          <div id="trake-speed" class="playback-speed" title="&lt; / , slower, &gt; / . faster, 0 resets to 1x">1x</div>
           <button class="btn" id="trake-export-btn" style="margin-top:0.5rem;" title="Export the exact frame currently playing">★ Export this frame</button>
           <div id="trake-gaps"></div>
         </div>
@@ -281,6 +310,8 @@ export async function openTrakePlaybackDialog(videoId, events) {
         video.src = data.video_url + `#t=${matched[0].timestamp}`;
         video.controls = true;
         wrap.append(video);
+        applyVideoPrefs(video);
+        bindSpeedShortcut(video, box, box.querySelector("#trake-speed"));
 
         const bar = box.querySelector("#trake-marker-bar");
         const timer = box.querySelector("#trake-timer");

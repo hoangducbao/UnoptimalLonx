@@ -48,6 +48,7 @@
 
 import { exportCsv, getExportFrame, getExportNeighbors, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
 import { fmtTime } from "./format.js";
+import { applyVideoPrefs, bindSpeedShortcut } from "./video-controls.js";
 
 const NEIGHBOUR_COUNT_EXPORT = 10; // fixed row-generation window, independent of preview expand state
 const PREVIEW_PAGE = 12; // 3x4 grid per preview section (export-preview-grid is 4 columns wide)
@@ -87,6 +88,7 @@ function freshTrakeState() {
         events: [],       // [{frame_idx, thumbnail}], in sequence order (event 1..N)
         dragIndex: null,
         videoEl: null,     // the curation panel's live <video>, for Add/capture
+        unbindSpeedShortcut: null, // bindSpeedShortcut()'s cleanup for the current videoEl
         fps: 25,
         // video_id -> {frameIdxs: [...], rows: [[f1..fN], ...]} -- one
         // entry per "Generate rows" click; overwritten if regenerated for
@@ -491,6 +493,9 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             video.src = data.video_url;
             video.controls = true;
             wrap.append(video);
+            applyVideoPrefs(video);
+            if (s.trake.unbindSpeedShortcut) s.trake.unbindSpeedShortcut(); // drop the outgoing <video>'s listener before binding the new one
+            s.trake.unbindSpeedShortcut = bindSpeedShortcut(video, wrap, el("#trake-cur-speed"));
             s.trake.videoEl = video;
             const timer = el("#trake-cur-timer");
             video.addEventListener("timeupdate", () => {
@@ -708,6 +713,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
                 <input type="text" id="trake-load-video" placeholder="Video ID e.g. L21_V001">
                 <button class="btn" id="trake-load-btn" type="button">Load / switch</button>
                 <span id="trake-cur-timer" class="playback-timer">--:-- · frame --</span>
+                <span id="trake-cur-speed" class="playback-speed" title="&lt; / , slower, &gt; / . faster, 0 resets to 1x">1x</span>
                 <button class="btn btn-primary" id="trake-add-btn" type="button">+ Add current frame as event</button>
               </div>
               <div class="trake-main-row">
