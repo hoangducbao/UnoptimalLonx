@@ -32,7 +32,6 @@ export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
   AICDataExtracted/ocr/                             per-frame OCR text (bulk-indexed into ES)
   AICDataExtracted/summaries/ + summary_embed/       one-paragraph video summaries
   AICDataExtracted/filtered_object/ (+class_vocab.csv)  per-frame OD detections + vocabulary
-  AICData/clip-features-32/*.npy                    CLIP ViT-B/32 frame embeddings (512-d, fp16)
   AICData/map-keyframes/*.csv                       per-frame timestamps + native frame_idx
   AICData/keyframes/{video_id}/{n:03d}.jpg           thumbnails
   AICData/video/{video_id}.mp4                       source video (playback dialogs)
@@ -61,15 +60,12 @@ export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
 
 2. **Point the app at your data.** All data paths are hardcoded module
    constants (single-team local scaffold, no env-file layer) -- edit
-   these two files to match wherever you staged the folders above:
-   - `backend/config.py` -- every `*_DIR`/`*_GLOB` constant near the top
-     (`FRAME_SIGLIP2_GLOB`, `ASR_EMBED_DIR`, `TRANSCRIPTS_DIR`, ...,
-     `MAP_KEYFRAMES_DIR`, `THUMBNAIL_ROOT`, `VIDEO_DIR`). They're all
-     absolute paths under one root today (`D:/University/Summ26/AICData*`)
-     -- if you mirror that same layout, it's a one-line prefix change per
-     platform, not per constant.
-   - `pipeline/config.py` -- just a model name, nothing to change here
-     unless you're swapping the CLIP text tower.
+   `backend/config.py`'s every `*_DIR`/`*_GLOB` constant near the top
+   (`FRAME_SIGLIP2_GLOB`, `ASR_EMBED_DIR`, `TRANSCRIPTS_DIR`, ...,
+   `MAP_KEYFRAMES_DIR`, `THUMBNAIL_ROOT`, `VIDEO_DIR`) to match wherever
+   you staged the folders above. They're all absolute paths under one root
+   today (`D:/University/Summ26/AICData*`) -- if you mirror that same
+   layout, it's a one-line prefix change per platform, not per constant.
 
 3. **Start Elasticsearch** (Docker):
    ```
@@ -147,8 +143,8 @@ For the simplest and most robust setup, use the included **`kaggle_routing101.ip
    it to your notebook. It mounts read-only under
    `/kaggle/input/<dataset-slug>/...`.
 
-2. **Point the app at Kaggle's paths.** Same two files as Track A step 2
-   (`backend/config.py`, `pipeline/config.py`), just pointed at
+2. **Point the app at Kaggle's paths.** Same file as Track A step 2
+   (`backend/config.py`), just pointed at
    `/kaggle/input/<dataset-slug>/...` instead of the `D:/...` paths.
    `INDEX_DIR`/`SUMMARY_EMBED_DIR` (under `REPO_ROOT`, i.e. wherever you
    `!git clone`'d the repo inside the notebook) are fine as-is -- they're
@@ -158,7 +154,7 @@ For the simplest and most robust setup, use the included **`kaggle_routing101.ip
    `torch`; this just fills in what's missing):
    ```bash
    !pip install -q fastapi uvicorn python-multipart cachetools \
-       "elasticsearch>=8.11,<8.13" multilingual-clip timm faiss-cpu pycloudflared
+       "elasticsearch>=8.11,<8.13" faiss-cpu pycloudflared
    ```
 
 4. **Get Elasticsearch running.** Kaggle notebooks don't run a Docker
@@ -181,7 +177,7 @@ For the simplest and most robust setup, use the included **`kaggle_routing101.ip
 6. **Optional: turn on a GPU** (Settings → Accelerator → GPU T4 x2 or
    P100) before running -- `backend/models.py` auto-detects
    `torch.cuda.is_available()`, no code change needed, and it meaningfully
-   speeds up SigLIP2/CLIP inference over CPU-only.
+   speeds up SigLIP2 inference over CPU-only.
 
 ## Verifying it's working
 

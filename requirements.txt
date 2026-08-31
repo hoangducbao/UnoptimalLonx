@@ -2,23 +2,11 @@ numpy>=2.0
 pandas>=2.0
 faiss-cpu>=1.7.4
 
-# ViCLIP-OT (minhnguyent546/ViCLIP-OT, arXiv:2602.22678) -- loaded via
-# transformers.AutoModel(..., trust_remote_code=True). timm/pillow are
-# needed because AutoModel instantiates the full model (image + text
-# tower), even though this pipeline only calls encode_text at runtime.
+# SigLIP2 (backend/models.py) -- joint text/image embedding space shared
+# by every SigLIP2-backed leg (frame, ASR, caption, summary).
 torch>=2.8.0
-torchvision>=0.23.0
 transformers>=4.57.0
-timm
 pillow
-
-tqdm>=4.60
-
-# clip_vitb32 backend (pipeline/clip_encoder.py) -- Multilingual-CLIP's text
-# tower, paired with the pre-extracted AICData/clip-features-32/*.npy
-# (OpenAI ViT-B/32 image tower). sentencepiece/huggingface_hub come along
-# transitively but are pinned implicitly by these two.
-multilingual-clip==1.0.10
 
 # ASR / Caption fuzzy legs (backend/search/asr.py, caption.py) -- bulk-indexes
 # transcript/caption text into a local Elasticsearch and runs a fuzzy match

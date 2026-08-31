@@ -7,7 +7,7 @@ rewrite adds ASR/Caption/OCR/Summary alongside Phase 1's Keyframe --
 Mixed/TRAKE/Hierarchy land in later phases, same module.
 """
 
-from typing import Dict, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -23,14 +23,14 @@ from ..search import keyframe as kf
 from ..search import mixed as mixed_mod
 from ..search import ocr as ocr_mod
 from ..search import summary as sum_mod
+from ..search import trake as trake_mod
 from .query_image import resolve_query
 
 router = APIRouter()
 
 # Shared skip-message text -- identical wording to ui/app.py's st.caption()
-# calls (ui/app.py:1986, 1992, 2016-2017, 2042-2043, 2079-2080) so the API
-# response reads the same regardless of which signal it came from.
-_SKIP_SIGLIP2_ONLY = "Skipped — picture queries are SigLIP2-only."
+# calls (ui/app.py:2016-2017, 2042-2043, 2079-2080) so the API response
+# reads the same regardless of which signal it came from.
 _SKIP_NOTHING_TO_FUSE = "Skipped — picture queries only ever have one active leg (SigLIP2), nothing to fuse."
 
 
@@ -38,12 +38,6 @@ class LegResult(BaseModel):
     skipped: Optional[str] = None
     warning: Optional[str] = None
     results: list = []
-
-
-class KeyframeLegs(BaseModel):
-    siglip2: bool = True
-    clip: bool = True
-    rrf: bool = True
 
 
 class KeyframeSearchRequest(BaseModel):
@@ -56,51 +50,30 @@ class KeyframeSearchRequest(BaseModel):
     od_filter: str = ""
     facet_field: str = ""
     facet_value: str = ""
-    legs: KeyframeLegs = KeyframeLegs()
 
 
 class KeyframeSearchResponse(BaseModel):
-    siglip2: Optional[LegResult] = None
-    clip: Optional[LegResult] = None
-    rrf: Optional[LegResult] = None
+    warning: Optional[str] = None
+    results: list = []
 
 
+# Keyframe is SigLIP2-only -- its CLIP ViT-B/32 leg (and the Multilingual-CLIP
+# query-time text encoder behind it) was removed entirely, see
+# backend/search/keyframe.py's docstring. No legs to choose, no RRF to fuse
+# -- same single-leg shape as OCR below.
 @router.post("/api/search/keyframe", response_model=KeyframeSearchResponse)
 def search_keyframe(body: KeyframeSearchRequest):
     query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
-    image_query = is_image_query(query)
     od_matched, od_unmatched = od.match_classes(body.od_filter)
     od_warning = od.unmatched_warning(od_unmatched)
 
-    siglip2_df = clip_df = None
-    if body.legs.siglip2 or body.legs.rrf:
-        siglip2_df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), body.video_filter, lot_filter)
-        siglip2_df = md.apply_facet_filter(siglip2_df, body.facet_field, body.facet_value)
-    if body.legs.clip or body.legs.rrf:
-        clip_df = apply_filters(kf.search_clip_frame(query, k=fetch_k), body.video_filter, lot_filter)
-        clip_df = md.apply_facet_filter(clip_df, body.facet_field, body.facet_value)
-
-    resp = KeyframeSearchResponse()
-    if body.legs.siglip2:
-        filtered = od.apply_od_filter(siglip2_df, od_matched)
-        resp.siglip2 = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k) if filtered is not None else None, "score"))
-    if body.legs.clip:
-        if image_query:
-            resp.clip = LegResult(skipped="Skipped — picture queries are SigLIP2-only.")
-        else:
-            filtered = od.apply_od_filter(clip_df, od_matched)
-            resp.clip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k) if filtered is not None else None, "score"))
-    if body.legs.rrf:
-        if image_query:
-            resp.rrf = LegResult(skipped=_SKIP_NOTHING_TO_FUSE)
-        else:
-            fused = kf.rrf_fuse_frame([siglip2_df, clip_df], top_n=fetch_k)
-            fused = od.apply_od_filter(fused, od_matched)
-            resp.rrf = LegResult(warning=od_warning, results=df_to_results(fused.head(top_k), "rrf_score"))
-    return resp
+    df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), body.video_filter, lot_filter)
+    df = md.apply_facet_filter(df, body.facet_field, body.facet_value)
+    filtered = od.apply_od_filter(df, od_matched)
+    return KeyframeSearchResponse(warning=od_warning, results=df_to_results(filtered.head(top_k) if filtered is not None else None, "score"))
 
 
 # ---------------------------------------------------------------------------
@@ -282,15 +255,27 @@ def search_ocr(body: OcrSearchRequest):
 
 
 # ---------------------------------------------------------------------------
-# Mixed: a user-weighted RRF across Keyframe/ASR/Caption/OCR (ui/app.py:
-# 896-978, 2089-2110). `weights`/`legs` come from the frontend's one shared
-# mixedConfig (state.js) -- the backend stays stateless per request, see
-# the rewrite plan's Decisions section 2.
+# Mixed: many independent sub-queries, each with its own text and its own
+# single signal (Keyframe/ASR/Caption/OCR -- no nested "Mixed", no Summary
+# [video-level, always resolves to frame 1 -- reserved for TRAKE's context
+# row instead, see backend/routes/trake.py], no reverse-image-search per
+# sub-query), combined with a user-weighted RRF (0-3 per sub-query). Each
+# sub-query is resolved via trake_search_event() -- the exact same
+# per-signal search + internal RRF every standalone signal route and TRAKE
+# event already use -- then rrf_fuse_weighted() combines them keyed by
+# sub-query index (not signal name), so two sub-queries can share a signal
+# without colliding. TRAKE's own per-event "Mixed" signal option (backed by
+# the shared mixedConfig weights/legs) is unrelated and unchanged.
 # ---------------------------------------------------------------------------
 
+class MixedSubQuery(BaseModel):
+    text: str
+    signal: Literal["Keyframe", "ASR", "Caption", "OCR"]
+    weight: int = 1
+
+
 class MixedSearchRequest(BaseModel):
-    query: Optional[str] = None
-    image_id: Optional[str] = None
+    queries: List[MixedSubQuery] = []
     top_k: int = config.DISPLAY_N
     video_filter: str = ""
     lot_filter: str = ""
@@ -298,8 +283,7 @@ class MixedSearchRequest(BaseModel):
     od_filter: str = ""
     facet_field: str = ""
     facet_value: str = ""
-    weights: Dict[str, int] = {}
-    legs: Dict[str, bool] = {}
+    show_transcript: bool = False
 
 
 class MixedSearchResponse(BaseModel):
@@ -310,30 +294,39 @@ class MixedSearchResponse(BaseModel):
 
 @router.post("/api/search/mixed", response_model=MixedSearchResponse)
 def search_mixed(body: MixedSearchRequest):
-    query = resolve_query(body.query, body.image_id)
     top_k = body.top_k
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     od_matched, od_unmatched = od.match_classes(body.od_filter)
     od_warning = od.unmatched_warning(od_unmatched)
 
-    signal_dfs = {}
-    if body.weights.get("Keyframe", 0):
-        signal_dfs["Keyframe"] = mixed_mod._mixed_keyframe_df(query, fetch_k, body.video_filter, lot_filter, body.legs)
-    if body.weights.get("ASR", 0):
-        signal_dfs["ASR"] = mixed_mod._mixed_asr_df(query, fetch_k, body.video_filter, lot_filter, body.legs)
-    if body.weights.get("Caption", 0):
-        signal_dfs["Caption"] = mixed_mod._mixed_caption_df(query, fetch_k, body.video_filter, lot_filter, body.legs)
-    if body.weights.get("OCR", 0):
-        signal_dfs["OCR"] = mixed_mod._mixed_ocr_df(query, fetch_k, body.video_filter, lot_filter)
+    sub_dfs, sub_weights = {}, {}
+    for i, q in enumerate(body.queries):
+        text = q.text.strip()
+        if not text or q.weight <= 0:
+            continue
+        df = trake_mod.trake_search_event(
+            text, q.signal, fetch_k, body.video_filter, lot_filter,
+            facet_field=body.facet_field, facet_value=body.facet_value,
+        )
+        if df is not None and not df.empty:
+            sub_dfs[i] = df[["video_id", "n", "rank"]]
+            sub_weights[i] = q.weight
 
-    if not signal_dfs:
+    if not sub_dfs:
         return MixedSearchResponse(empty=True)
 
-    # RRF-fuse at fetch_k (not top_k) so the OD filter -- a *post*-RRF
-    # step -- still has a real candidate pool to narrow before truncation,
-    # same reasoning as every per-signal route above.
-    fused = mixed_mod.rrf_fuse_weighted(signal_dfs, body.weights, top_n=fetch_k)
-    fused = md.apply_facet_filter(fused, body.facet_field, body.facet_value)
+    # trake_search_event() already applies the facet filter per sub-query,
+    # so only OD filtering (which it doesn't apply) needs to happen here,
+    # post-fusion, same as every per-signal route above.
+    fused = mixed_mod.rrf_fuse_weighted(sub_dfs, sub_weights, top_n=fetch_k)
     fused = od.apply_od_filter(fused, od_matched)
-    return MixedSearchResponse(warning=od_warning, results=df_to_results(fused.head(top_k), "rrf_score"))
+    results = df_to_results(fused.head(top_k), "rrf_score")
+    if body.show_transcript:
+        # Attaches ASR transcript text under every result regardless of
+        # which sub-query actually ranked it (unlike the per-signal routes'
+        # `text_col`, which only ever carries text a signal's own search
+        # produced) -- opt-in since it's an extra per-row lookup.
+        for r in results:
+            r["text"] = asr_mod.transcript_for_frame(r["video_id"], r["n"])
+    return MixedSearchResponse(warning=od_warning, results=results)

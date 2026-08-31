@@ -18,7 +18,7 @@ except Exception:
     pass
 
 FETCH_K = 100      # candidates pulled per leg, gives RRF a real pool to fuse
-DISPLAY_N = 30
+DISPLAY_N = 100
 RRF_K = 60
 NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id
 TOP_G_DEFAULT = 5   # Hierarchy Search: frames kept per video after drill-down (Top-G)
@@ -57,7 +57,6 @@ if DATASET_MODE == "ADL":
     ADL_EXTRACTED_DIR = Path(os.getenv("ADL_EXTRACTED_DIR", "D:/ADLDataExtracted"))
 
     FRAME_SIGLIP2_GLOB = str(ADL_EXTRACTED_DIR / "siglib_embed" / "*.npy")
-    FRAME_CLIP_GLOB = str(ADL_RAW_DIR / "clip-features-32" / "*.npy")
 
     ASR_EMBED_DIR = ADL_EXTRACTED_DIR / "transcript_embed"
     TRANSCRIPTS_DIR = ADL_EXTRACTED_DIR / "transcripts"
@@ -81,11 +80,6 @@ else:
     if not siglip_dir.exists() and Path("D:/University/Summ26/AICDataExtracted/siglib_embed").exists():
         siglip_dir = Path("D:/University/Summ26/AICDataExtracted/siglib_embed")
     FRAME_SIGLIP2_GLOB = os.getenv("FRAME_SIGLIP2_GLOB", str(siglip_dir / "*.npy"))
-
-    clip_dir = _find_dir(["clip-features-32", "clip_features_32"], "D:/vids/clip-features-32")
-    if not clip_dir.exists() and Path("D:/University/Summ26/AICData/clip-features-32").exists():
-        clip_dir = Path("D:/University/Summ26/AICData/clip-features-32")
-    FRAME_CLIP_GLOB = os.getenv("FRAME_CLIP_GLOB", str(clip_dir / "*.npy"))
 
     ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(["asr_embed", "transcript_embed", "transcripts_embed"], "D:/vids/AICDataExtracted/asr_embed"))))
     TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", str(_find_dir(["transcripts", "transcript"], "D:/vids/transcripts_l25_results"))))

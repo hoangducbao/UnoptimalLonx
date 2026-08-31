@@ -39,8 +39,6 @@ async def lifespan(app: FastAPI):
 
     print("[startup] Keyframe — SigLIP2 frame index")
     kf.build_frame_index(config.FRAME_SIGLIP2_GLOB)
-    print("[startup] Keyframe — CLIP frame index")
-    kf.build_frame_index(config.FRAME_CLIP_GLOB)
 
     print("[startup] ASR — SigLIP2 index")
     asr_mod.build_siglip_asr_index()

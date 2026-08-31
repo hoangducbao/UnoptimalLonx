@@ -8,7 +8,7 @@ backend/search/hierarchy.py -- Hierarchy Search, three steps:
   3. Drill-down: the chosen seed frame is embedded and searched scoped to
      that one video, pulling in up to Top-G frames total per video
      (default G=5, "Expand" bumps one video's own G by +10).
-This only ever uses the SigLIP2 frame leg -- CLIP/fuzzy legs have no
+This only ever uses the SigLIP2 frame leg -- fuzzy legs have no
 picture-query counterpart, and the drill-down step is a picture query by
 construction (the seed is a frame's own thumbnail), so there's no
 meaningful text/RRF path to offer here at all. Ported from
@@ -18,7 +18,6 @@ ui/app.py:1132-1179 (hierarchy_expand_group).
 import pandas as pd
 from PIL import Image
 
-from .. import config
 from .. import metadata_filter as md
 from ..common import apply_filters, df_to_results, thumbnail_disk_path
 from . import keyframe as kf

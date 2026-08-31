@@ -52,14 +52,14 @@ window.__routing101.handoffs = window.__routing101.handoffs || new Map();
 
 export const MIXED_SIGNAL_NAMES = ["Keyframe", "ASR", "Caption", "OCR"];
 export const MIXED_LEG_DEFS = {
-    Keyframe: [["kf_siglip2", "SigLIP2"], ["kf_clip", "CLIP"]],
+    // Keyframe intentionally omitted -- CLIP was removed entirely, leaving
+    // a single SigLIP2 leg, nothing to choose (like OCR below).
     ASR: [["asr_siglip", "SigLIP2 ASR"], ["asr_fuzzy", "Fuzzy ASR"]],
     Caption: [["cap_siglip", "SigLIP2 Caption"], ["cap_fuzzy", "Fuzzy Caption"]],
     // OCR intentionally omitted -- single fuzzy-only leg, nothing to choose.
 };
 export const MIXED_DEFAULT_WEIGHTS = Object.fromEntries(MIXED_SIGNAL_NAMES.map((n) => [n, 1]));
 export const MIXED_DEFAULT_LEGS = {
-    kf_siglip2: true, kf_clip: true,
     asr_siglip: false, asr_fuzzy: true,
     cap_siglip: false, cap_fuzzy: true,
 };
@@ -94,11 +94,33 @@ export function saveMixedConfig() {
 // ui/app.py:1615.
 // ---------------------------------------------------------------------------
 
-export const TRAKE_EVENT_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR", "Summary", "Mixed"];
+// Summary is video-level (one paragraph per video, always resolves to
+// frame 1 -- see attach_keyframe_summary in backend/search/summary.py), so
+// it's reserved for the context row's whole-video boost query and left out
+// of the per-event signal choices below (an ordered event pinned to frame
+// 1 mostly just breaks TRAKE's strict-order check anyway).
+export const TRAKE_EVENT_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR", "Mixed"];
 
 export const trakeState = {
+    // Context's signal is fixed to "Summary" -- no dropdown, see trake.js's
+    // context row -- not one of the user-facing TRAKE_EVENT_SIGNALS above.
     context: { text: "", signal: "Summary" },
     events: [{ id: 0, text: "", signal: "Keyframe" }],
+    nextId: 1,
+};
+
+// ---------------------------------------------------------------------------
+// Mixed search state -- many independent sub-queries, each with its own
+// text + single signal (no nested "Mixed", no image sub-queries -- unlike
+// TRAKE's events, these aren't ordered and aren't required to all match).
+// Combined via weighted RRF, weight (0-3) chosen per sub-query below.
+// ---------------------------------------------------------------------------
+
+// Summary excluded here too, same reasoning as TRAKE_EVENT_SIGNALS above.
+export const MIXED_QUERY_SIGNALS = ["Keyframe", "ASR", "Caption", "OCR"];
+
+export const mixedQueryState = {
+    queries: [{ id: 0, text: "", signal: "Keyframe", weight: 1 }],
     nextId: 1,
 };
 
@@ -116,17 +138,27 @@ export function getNeighborExtra(videoId, centerN) {
     return state.neighborExtra.get(key);
 }
 
+function scopeToggleActive(scope) {
+    return document.querySelector(`#scope-segmented button[data-scope="${scope}"]`).classList.contains("active");
+}
+
 // Reads the sidebar's video/collection scope controls into a request-body
-// fragment -- shared by every signal's search-body builder so the
-// "Exclude" checkbox (drop the collection range instead of restricting to
-// it) only has to be wired up here, not independently in six signal files.
+// fragment -- shared by every signal's search-body builder so the "excl"
+// toggle (drop the collection range instead of restricting to it) only has
+// to be wired up here, not independently in six signal files.
+// "excl" works whether or not "coll" is also on: either one alone is
+// enough to send the collection range, and "excl" decides which way it's
+// applied -- so a bare "excl" (no "coll") still drops that range instead
+// of being a silent no-op.
 export function scopeFilters() {
+    const collActive = scopeToggleActive("collection");
+    const exclActive = scopeToggleActive("exclude");
     return {
-        video_filter: document.getElementById("use-video-scope").checked
+        video_filter: scopeToggleActive("video")
             ? document.getElementById("video-filter").value : "",
-        lot_filter: document.getElementById("use-collection-scope").checked
+        lot_filter: (collActive || exclActive)
             ? document.getElementById("lot-filter").value : "",
-        exclude_lot: document.getElementById("exclude-collection-scope").checked,
+        exclude_lot: exclActive,
         od_filter: document.getElementById("od-filter").value,
         facet_field: document.getElementById("facet-field").value,
         facet_value: document.getElementById("facet-field").value

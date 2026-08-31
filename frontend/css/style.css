@@ -99,6 +99,9 @@ html, body {
 .scope-row { display: flex; gap: 0.5rem; }
 .scope-row > div { flex: 1; }
 
+#scope-segmented { margin-top: 0.5rem; }
+#scope-segmented button { flex: 1; }
+
 .checkbox-row {
     display: flex;
     align-items: center;
@@ -398,6 +401,7 @@ button {
 .trake-toprow input#trake-load-video { flex: 0 0 170px; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
 .trake-toprow #trake-load-btn { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 .trake-toprow .playback-timer { margin: 0; }
+.trake-toprow .playback-speed { margin: 0; }
 
 /* Video preview (left, 65%) and the event list (right, 35%) share one
    row -- .export-dialog video's max-width:100% keeps the video within its
@@ -492,6 +496,7 @@ button {
 .playback-info { flex: 0 0 240px; }
 .playback-info .thumb-caption { margin-bottom: 0.5rem; }
 .playback-timer { font-family: monospace; font-size: 0.9rem; margin-top: 0.5rem; }
+.playback-speed { font-family: monospace; font-size: 0.85rem; color: var(--text-muted); margin-top: 0.2rem; display: inline-block; cursor: help; }
 
 .playback-container {
     position: relative;
@@ -585,7 +590,7 @@ button {
     background: #000;
 }
 
-#trake-marker-bar {
+#trake-marker-bar, #playback-marker-bar {
     position: relative;
     height: 20px;
     margin: 6px 0 8px;

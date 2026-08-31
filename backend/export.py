@@ -1,7 +1,7 @@
 """
 backend/export.py -- AIC submission CSV export: ranking/dedup logic that
 turns a query's answer (a confirmed frame, or a user-curated ordered list)
-plus its search candidates into <=100 rows for one query's submission CSV,
+plus its search candidates into <=99 rows for one query's submission CSV,
 per the AIC scoring model (Final Score = average of R@k for k in
 {1, 5, 20, 50, 100}, where R@k = max score among the first k rows -- so
 only the best-scoring row within each threshold band matters, and a
@@ -34,7 +34,7 @@ curation happens per video (an ordered event list, each a native
 frame_idx, built by watching that video in the Export tab), row generation
 happens per video into an in-memory cache (frontend/js/export-ui.js), and
 a human merges however many cached videos they curated into one final
-<=100-row CSV at export time -- see generate_trake_rows()'s docstring for
+<=99-row CSV at export time -- see generate_trake_rows()'s docstring for
 the row-generation half of that, and ARCHITECTURE.md's "Export
 architecture" section for the curate/cache/merge flow end to end.
 
@@ -84,9 +84,9 @@ def nearest_keyframes_by_time(video_id: str, center_n: int, count: int) -> list:
     return valid_ns[:count]
 
 
-def generate_export(query_type: str, candidates: list, mode: str,
+def generate_export(candidates: list, mode: str,
                      confirmed: Optional[dict] = None, answers: Optional[list] = None,
-                     neighbour_count: int = DEFAULT_NEIGHBOUR_COUNT, max_rows: int = 100) -> list:
+                     neighbour_count: int = DEFAULT_NEIGHBOUR_COUNT, max_rows: int = 99) -> list:
     """Rank/dedup into <=max_rows rows for one query's submission CSV.
     `answer` (VQA text) isn't handled here -- it's the same string on
     every row, applied later by rows_to_csv_text(). KIS/VQA only -- TRAKE
@@ -205,7 +205,7 @@ def _fill_trake_row(raw: list, lo: int, hi: int, rng: Random) -> list:
     return chosen
 
 
-def generate_trake_rows(video_id: str, frame_idxs: list, max_rows: int = 100) -> list:
+def generate_trake_rows(video_id: str, frame_idxs: list, max_rows: int = 99) -> list:
     """<=max_rows candidate sequences for one video's curated TRAKE event
     list, per the spec's row-generation rules:
       row 1            = the curated picks, in event order, as given.

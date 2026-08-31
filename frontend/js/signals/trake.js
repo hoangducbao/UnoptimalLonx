@@ -5,6 +5,7 @@
 import { searchTrake } from "../api.js";
 import { openTrakePlaybackDialog, openWeightsDialog } from "../dialogs.js";
 import { openExportDialog } from "../export-dialog.js";
+import { signalSelectHtml } from "../signal-select.js";
 import { copyToScope, mixedConfig, resetExportCandidates, scopeFilters, trakeState, TRAKE_EVENT_SIGNALS } from "../state.js";
 
 const trakeSection = document.getElementById("trake-query-section");
@@ -13,11 +14,6 @@ const groupByRow = document.getElementById("group-by-row");
 const topVWrap = document.getElementById("top-v-wrap");
 
 let runRef = () => {};
-
-function signalSelectHtml(id, current) {
-    const opts = TRAKE_EVENT_SIGNALS.map((s) => `<option value="${s}"${s === current ? " selected" : ""}>${s}</option>`).join("");
-    return `<select id="${id}" style="width:100%;padding:0.35rem;border:1px solid var(--border);border-radius:6px;">${opts}</select>`;
-}
 
 function bindEnterSubmit(textarea) {
     // Trivial now -- ui/app.py's version needed a MutationObserver +
@@ -35,14 +31,11 @@ function bindEnterSubmit(textarea) {
 function renderInputs() {
     trakeSection.innerHTML = "";
 
-    // Context row (E0, optional).
+    // Context row (E0, optional) -- always matched via Summary (video-level
+    // whole-video boost), so no signal dropdown here, unlike the events below.
     const ctxWrap = document.createElement("div");
-    ctxWrap.innerHTML = `<div class="thumb-caption muted" style="margin:0.5rem 0 0.25rem;">Context — E0 (optional, boosts matching videos)</div>
+    ctxWrap.innerHTML = `<div class="thumb-caption muted" style="margin:0.5rem 0 0.25rem;">Context — E0 (optional, boosts matching videos via Summary)</div>
         <textarea id="trake-ctx-text" placeholder="optional context query" style="height:56px;"></textarea>
-        <div style="display:flex;gap:0.4rem;align-items:center;margin:0.3rem 0;">
-          <div style="flex:1;">${signalSelectHtml("trake-ctx-signal", trakeState.context.signal)}</div>
-          <button class="icon-btn" id="trake-ctx-weights" title="Change weights" style="display:${trakeState.context.signal === "Mixed" ? "flex" : "none"};">⚙</button>
-        </div>
         <hr class="divider">
         <div class="thumb-caption muted" style="margin-bottom:0.25rem;">Events, in required order</div>
         <div id="trake-event-rows"></div>
@@ -54,15 +47,6 @@ function renderInputs() {
     ctxText.oninput = () => { trakeState.context.text = ctxText.value; };
     bindEnterSubmit(ctxText);
 
-    const ctxSignal = trakeSection.querySelector("#trake-ctx-signal");
-    const ctxWeightsBtn = trakeSection.querySelector("#trake-ctx-weights");
-    ctxSignal.onchange = () => {
-        trakeState.context.signal = ctxSignal.value;
-        ctxWeightsBtn.style.display = ctxSignal.value === "Mixed" ? "flex" : "none";
-        runRef();
-    };
-    ctxWeightsBtn.onclick = () => openWeightsDialog(runRef);
-
     const rowsEl = trakeSection.querySelector("#trake-event-rows");
     trakeState.events.forEach((ev, i) => {
         const row = document.createElement("div");
@@ -70,7 +54,7 @@ function renderInputs() {
         row.innerHTML = `<div class="thumb-caption muted" style="margin-bottom:0.25rem;">Event ${i + 1}</div>
             <textarea placeholder="E${i + 1} query text" style="height:56px;"></textarea>
             <div style="display:flex;gap:0.4rem;align-items:center;margin-top:0.3rem;">
-              <div style="flex:1;">${signalSelectHtml(`trake-ev-signal-${ev.id}`, ev.signal)}</div>
+              <div style="flex:1;">${signalSelectHtml(`trake-ev-signal-${ev.id}`, ev.signal, TRAKE_EVENT_SIGNALS)}</div>
               <button class="icon-btn" title="Change weights" style="display:${ev.signal === "Mixed" ? "flex" : "none"};">⚙</button>
               <button class="icon-btn" title="Remove event" ${trakeState.events.length <= 1 ? "disabled" : ""}>✕</button>
             </div>`;
@@ -188,7 +172,7 @@ export async function run(resultsEl, statusEl) {
     }
     statusEl.innerHTML = "";
 
-    const topK = parseInt(document.getElementById("top-k").value, 10) || 30;
+    const topK = parseInt(document.getElementById("top-k").value, 10) || 100;
     const topV = parseInt(document.getElementById("top-v").value, 10) || 10;
     const body = {
         context: trakeState.context.text.trim() ? trakeState.context : null,

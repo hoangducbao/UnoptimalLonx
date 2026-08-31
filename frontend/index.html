@@ -37,25 +37,23 @@
 
     <div id="trake-query-section" style="display:none;"></div>
 
+    <div id="mixed-query-section" style="display:none;"></div>
+
     <div class="scope-row">
       <div>
         <label for="video-filter">Search in video</label>
         <input type="text" id="video-filter" placeholder="e.g. L21_V001">
-        <div class="checkbox-row">
-          <input type="checkbox" id="use-video-scope">
-          <label for="use-video-scope" style="margin:0;">Use video</label>
-        </div>
       </div>
       <div>
         <label for="lot-filter">Search in collection</label>
         <input type="text" id="lot-filter" placeholder="e.g. L21-L30">
-        <div class="checkbox-row">
-          <input type="checkbox" id="use-collection-scope">
-          <label for="use-collection-scope" style="margin:0;">Use collection</label>
-          <input type="checkbox" id="exclude-collection-scope" style="margin-left:0.8rem;">
-          <label for="exclude-collection-scope" style="margin:0;" title="Drop this collection range instead of restricting to it">Exclude</label>
-        </div>
       </div>
+    </div>
+
+    <div class="segmented" id="scope-segmented">
+      <button type="button" data-scope="video" title="Restrict to the video id above">vid</button>
+      <button type="button" data-scope="collection" title="Restrict to the collection range above">coll</button>
+      <button type="button" data-scope="exclude" title="Drop the collection range above instead of restricting to it -- works with or without &quot;coll&quot;">excl</button>
     </div>
 
     <div class="scope-row">
@@ -80,7 +78,7 @@
     <div class="scope-row">
       <div>
         <label for="top-k">Top-K</label>
-        <input type="number" id="top-k" value="30" min="1" max="200" step="5">
+        <input type="number" id="top-k" value="100" min="1" max="200" step="5">
       </div>
       <div id="top-v-wrap" style="display:none;">
         <label for="top-v">Top-V</label>

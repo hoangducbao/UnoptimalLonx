@@ -23,13 +23,13 @@
 //          Neighbours/Similars preview for TRAKE -- the Frame ID box is
 //          the only other way to add an event, besides the video itself.
 //       2. "Generate rows" POSTs that video's {video_id, frame_idxs} to
-//          /api/export/trake-rows and caches the <=100 returned candidate
+//          /api/export/trake-rows and caches the <=99 returned candidate
 //          sequences client-side, keyed by video_id (`s.trake.cache`
 //          below) -- repeatable for as many candidate videos as the human
 //          wants to compare, each just adding another entry.
 //       3. Export: the human checks which cached videos to include and
 //          their priority order; the rows are interleaved client-side (no
-//          backend round-trip, no re-reading anything) into one <=100-row
+//          backend round-trip, no re-reading anything) into one <=99-row
 //          set and POSTed to /api/export/trake-write, which only formats
 //          + returns CSV text for already-resolved rows -- the one file
 //          this whole flow ever writes to disk.
@@ -47,6 +47,8 @@
 //     for the backend's flat CSV path, which this trigger doesn't have).
 
 import { exportCsv, getExportFrame, getExportNeighbors, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
+import { fmtTime } from "./format.js";
+import { applyVideoPrefs, bindSpeedShortcut } from "./video-controls.js";
 
 const NEIGHBOUR_COUNT_EXPORT = 10; // fixed row-generation window, independent of preview expand state
 const PREVIEW_PAGE = 12; // 3x4 grid per preview section (export-preview-grid is 4 columns wide)
@@ -71,7 +73,7 @@ function freshState(trigger) {
         // TRAKE: no confirmed/unconfirmed distinction any more -- one
         // per-video curation session (video + ordered event list, each a
         // native frame_idx with its own add-time thumbnail) feeds a
-        // "Generate rows" call whose <=100 candidate sequences are cached
+        // "Generate rows" call whose <=99 candidate sequences are cached
         // here per video_id; a final merge step interleaves however many
         // cached videos the human picked, in priority order, into one CSV.
         // See freshTrakeState() below and the "TRAKE: curate one video's
@@ -86,6 +88,7 @@ function freshTrakeState() {
         events: [],       // [{frame_idx, thumbnail}], in sequence order (event 1..N)
         dragIndex: null,
         videoEl: null,     // the curation panel's live <video>, for Add/capture
+        unbindSpeedShortcut: null, // bindSpeedShortcut()'s cleanup for the current videoEl
         fps: 25,
         // video_id -> {frameIdxs: [...], rows: [[f1..fN], ...]} -- one
         // entry per "Generate rows" click; overwritten if regenerated for
@@ -444,12 +447,6 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     // --- TRAKE: curate one video's events -> cache its generated rows ->
     // merge however many cached videos into the final export -----------
 
-    function fmtTime(t) {
-        const mm = String(Math.floor(t / 60)).padStart(2, "0");
-        const ss = (t % 60).toFixed(2).padStart(5, "0");
-        return `${mm}:${ss}`;
-    }
-
     // Grabs a JPEG data URL of whatever frame `video` is showing right
     // now -- this is the "cache the thumbnail at add-time" half of the
     // spec, since a raw native frame has no existing thumbnail file to
@@ -492,26 +489,18 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             if (el("#trake-video-wrap") !== wrap) return; // panel torn down mid-fetch (query type switched away)
             s.trake.fps = data.fps;
             wrap.innerHTML = "";
-            if (data.has_video) {
-                const video = document.createElement("video");
-                video.src = data.video_url;
-                video.controls = true;
-                video.preload = "metadata";
-                video.playsInline = true;
-                wrap.append(video);
-                s.trake.videoEl = video;
-                const timer = el("#trake-cur-timer");
-                video.addEventListener("timeupdate", () => {
-                    timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * s.trake.fps)}`;
-                });
-                video.onerror = () => {
-                    s.trake.videoEl = null;
-                    if (wrap) wrap.innerHTML = `<div class="status-banner warn">Video file stream unavailable for ${videoId}. Use keyframe export instead.</div>`;
-                };
-            } else {
-                s.trake.videoEl = null;
-                if (wrap) wrap.innerHTML = `<div class="status-banner warn">Video file .mp4 not found on disk for ${videoId}. Use keyframe export instead.</div>`;
-            }
+            const video = document.createElement("video");
+            video.src = data.video_url;
+            video.controls = true;
+            wrap.append(video);
+            applyVideoPrefs(video);
+            if (s.trake.unbindSpeedShortcut) s.trake.unbindSpeedShortcut(); // drop the outgoing <video>'s listener before binding the new one
+            s.trake.unbindSpeedShortcut = bindSpeedShortcut(video, wrap, el("#trake-cur-speed"));
+            s.trake.videoEl = video;
+            const timer = el("#trake-cur-timer");
+            video.addEventListener("timeupdate", () => {
+                timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * s.trake.fps)}`;
+            });
         } catch (e) {
             s.trake.videoEl = null;
             if (wrap) wrap.innerHTML = `<div class="status-banner error">${e.message}</div>`;
@@ -599,7 +588,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     }
 
     // POSTs this video's curated {video_id, frame_idxs} to
-    // /api/export/trake-rows and stashes the <=100 returned candidate
+    // /api/export/trake-rows and stashes the <=99 returned candidate
     // sequences client-side, keyed by video_id -- repeatable for as many
     // candidate videos as the human wants to compare (each just adds/
     // overwrites its own cache entry, see module docstring). Newly cached
@@ -617,7 +606,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         try {
             const frameIdxs = s.trake.events.map((e) => e.frame_idx);
             const thumbnails = s.trake.events.map((e) => e.thumbnail);
-            const data = await getTrakeRows(s.trake.videoId, frameIdxs, 100);
+            const data = await getTrakeRows(s.trake.videoId, frameIdxs, 99);
             s.trake.cache.set(s.trake.videoId, { frameIdxs, thumbnails, rows: data.rows });
             if (!s.trake.mergeOrder.includes(s.trake.videoId)) s.trake.mergeOrder.push(s.trake.videoId);
             s.trake.mergeChecked.add(s.trake.videoId);
@@ -724,6 +713,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
                 <input type="text" id="trake-load-video" placeholder="Video ID e.g. L21_V001">
                 <button class="btn" id="trake-load-btn" type="button">Load / switch</button>
                 <span id="trake-cur-timer" class="playback-timer">--:-- · frame --</span>
+                <span id="trake-cur-speed" class="playback-speed" title="&lt; / , slower, &gt; / . faster, 0 resets to 1x">1x</span>
                 <button class="btn btn-primary" id="trake-add-btn" type="button">+ Add current frame as event</button>
               </div>
               <div class="trake-main-row">
@@ -845,7 +835,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         if (s.queryType === "TRAKE") {
             // Client-side merge of the per-video cache -- no candidates/
             // confirmed/answers body to build, unlike KIS/VQA below.
-            const merged = mergeTrakeCache(100);
+            const merged = mergeTrakeCache(99);
             if (!merged.length) {
                 showStatus("Nothing to export -- curate a video, click \"Generate rows\", then check it below.");
                 return;

@@ -26,8 +26,6 @@ frontend/
   js/signals/          one module per signal, same render/search shape
   css/style.css
 pipeline/
-  config.py             constants shared by the text encoders (currently: the CLIP text-tower model name)
-  clip_encoder.py       Multilingual-CLIP text tower (paired with CLIP ViT-B/32 image features)
   build_class_vocab.py  builds the OD class vocabulary od_filter.py matches against
   *.csv                 per-lot metadata extracted upstream (metadata_filter.py's source)
 index/                  generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
@@ -37,14 +35,14 @@ index/                  generated FAISS indices + CSV metadata (git-ignored), re
 
 | Signal | Legs | Notes |
 |---|---|---|
-| Keyframe | SigLIP2, CLIP ViT-B/32, RRF | frame embeddings |
+| Keyframe | SigLIP2 only | frame embeddings; CLIP ViT-B/32 + its Multilingual-CLIP query-time text encoder (XLM-RoBERTa-large) were removed entirely -- that text tower alone cost ~4.6GB RAM lazily loaded, dwarfing every other model/index in this system combined |
 | ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | transcript segments mapped to nearest keyframe |
 | Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | one row per keyframe |
 | OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |
 | Summary | SigLIP2-summary, Elasticsearch fuzzy, RRF | video-level: one result per video |
-| Mixed | weighted RRF across Keyframe/ASR/Caption/OCR | per-signal on/off leg toggles + adjustable weights |
+| Mixed | many independent sub-queries (Keyframe/ASR/Caption/OCR), fused by weighted RRF | one query + one signal + one weight (0-3) per sub-query, add/remove freely; optional "Show transcript" attaches ASR text under every result regardless of which sub-query ranked it |
 | Hierarchy | SigLIP2 only | frame search grouped by video, drilled down per video |
-| TRAKE | reuses the other signals, one per event | ordered multi-event search: find videos where every event's best match occurs in order |
+| TRAKE | reuses the other signals, one per event | ordered multi-event search: find videos where every event's best match occurs in order; optional context (E0) query is always matched via Summary, boosting a video's score independent of the ordering constraint |
 
 Every leg normalizes to `{video_id, n, rank, score_label, score_val, text}`
 (`backend/common.py::df_to_results`) before it reaches the frontend, so one
@@ -71,7 +69,7 @@ same-origin `window.opener` handoff (`state.js` exposes
 to the opener's `exportState`, not a frozen snapshot, so "Similars" always
 reflects the opener's most recent search). It generates a ranked, deduped
 CSV for one AIC query (`query-p2-<#>-<kis|qa|trake>.csv`, no header row),
-capped at 100 rows per the R@k scoring model (Final Score = average of
+capped at 99 rows per the R@k scoring model (Final Score = average of
 R@k for k in {1, 5, 20, 50, 100}, where R@k = max score among the first k
 rows — only the best-scoring row within each threshold band matters, so a
 duplicate of an already-placed row never helps, only wastes a slot).
@@ -99,13 +97,13 @@ duplicate of an already-placed row never helps, only wastes a slot).
   2. **Generate rows**: POSTs that video's `{video_id, frame_idxs}` to
      `/api/export/trake-rows`, which runs
      `backend/export.py::generate_trake_rows` — row 1 is the curated
-     picks as-is; rows 2–100 zip each event's *k*-th nearest neighbour
+     picks as-is; rows 2–99 zip each event's *k*-th nearest neighbour
      (keyframe-index distance if that event's pick is itself a keyframe,
      else plain native-frame-number distance, since a non-keyframe pick
      has no embedding to search a "similar" pool with at all), enforcing
      per-row temporal ordering (event *i*'s frame < event *j*'s for
      *i*<*j*) via random interpolation whenever a neighbour stream runs
-     dry or would break that order. The ≤100 resulting sequences are
+     dry or would break that order. The ≤99 resulting sequences are
      cached client-side, keyed by `video_id` — repeatable for as many
      candidate videos as you want to compare, each just adding another
      cache entry.
@@ -113,7 +111,7 @@ duplicate of an already-placed row never helps, only wastes a slot).
      a priority order; the rows are interleaved client-side (no backend
      round-trip, no re-reading anything) — each checked video's own row 1
      first in priority order, then row 2/3/... round-robin in that same
-     order until the 100-row cap or every video's rows are spent — and
+     order until the 99-row cap or every video's rows are spent — and
      POSTed to `/api/export/trake-write`, which only formats + returns
      CSV text for already-resolved rows (the one file this whole flow
      ever writes to disk).

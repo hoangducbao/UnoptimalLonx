@@ -8,7 +8,7 @@ playback dialog without a second round-trip -- it only needs GET
 /api/playback (already built) to resolve fps for the live timer.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -20,13 +20,22 @@ from ..search import trake as trake_mod
 router = APIRouter()
 
 
+class TrakeContext(BaseModel):
+    # Summary is video-level (always resolves to frame 1 -- see
+    # attach_keyframe_summary in backend/search/summary.py), so it's
+    # reserved for this whole-video boost query and fixed here, not a
+    # user-facing choice -- see TrakeEvent below for the events' own list.
+    text: str
+    signal: Literal["Summary"] = "Summary"
+
+
 class TrakeEvent(BaseModel):
     text: str
-    signal: str
+    signal: Literal["Keyframe", "ASR", "Caption", "OCR", "Mixed"]
 
 
 class TrakeSearchRequest(BaseModel):
-    context: Optional[TrakeEvent] = None
+    context: Optional[TrakeContext] = None
     events: List[TrakeEvent]
     top_k: int = config.DISPLAY_N
     top_v: int = 10
