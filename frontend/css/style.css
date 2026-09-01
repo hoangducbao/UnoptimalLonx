@@ -184,10 +184,10 @@ button {
     transition: transform 0.15s ease-out, box-shadow 0.15s ease-out;
     transform-origin: center center;
 }
-.thumb-wrap:hover { z-index: 100; }
+.thumb-wrap:hover { z-index: 50; }
 .thumb-wrap:hover img {
-    transform: scale(2.2);
-    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    transform: scale(1.25);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
     position: relative;
 }
 /* TRAKE result cards with only 1-2 events: the zoom-on-hover above is more
