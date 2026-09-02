@@ -16,7 +16,7 @@ import {
     getNeighborExtra, MIXED_DEFAULT_LEGS, MIXED_DEFAULT_WEIGHTS,
     MIXED_LEG_DEFS, MIXED_SIGNAL_NAMES, mixedConfig, saveMixedConfig,
 } from "./state.js";
-import { applyVideoPrefs, bindSpeedShortcut } from "./video-controls.js";
+import { applyVideoPrefs, bindSpeedShortcut, captureVideoThumbnail } from "./video-controls.js";
 
 const root = document.getElementById("dialog-root");
 
@@ -162,9 +162,19 @@ export async function openPlaybackDialog(videoId, n) {
         // not), computed fresh at click time -- not read off the timer's
         // text, which is just a display of the same arithmetic. No
         // keyframe n involved at all, so this always opens as a TRAKE
-        // export (see export-ui.js's {kind:"frame"} handling).
+        // export (see export-ui.js's {kind:"frame"} handling). Carries the
+        // current playback position (seconds) and a thumbnail snapshot
+        // across the tab handoff too: the Export tab's curation video
+        // seeks to the same spot instead of restarting at 0:00, and the
+        // seeded TRAKE event gets a real preview instead of "no preview"
+        // (see export-ui.js's addTrakeEventFromTrigger/loadCurationVideo).
         box.querySelector("#playback-export-btn").onclick = () => {
-            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+            openExportDialog({
+                kind: "frame", video_id: videoId,
+                frame_idx: Math.round(video.currentTime * data.fps),
+                current_time: video.currentTime,
+                thumbnail: captureVideoThumbnail(video),
+            });
         };
     } catch (e) {
         box.querySelector("#playback-video-wrap").innerHTML =
@@ -337,9 +347,15 @@ export async function openTrakePlaybackDialog(videoId, events) {
         });
 
         // Same "capture the real frame fresh at click time" pattern as
-        // openPlaybackDialog's own export button.
+        // openPlaybackDialog's own export button, including the current-
+        // time/thumbnail handoff (see its comment above).
         box.querySelector("#trake-export-btn").onclick = () => {
-            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+            openExportDialog({
+                kind: "frame", video_id: videoId,
+                frame_idx: Math.round(video.currentTime * data.fps),
+                current_time: video.currentTime,
+                thumbnail: captureVideoThumbnail(video),
+            });
         };
     } catch (e) {
         box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner error">${e.message}</div>`;

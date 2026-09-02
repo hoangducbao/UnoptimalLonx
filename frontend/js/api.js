@@ -53,6 +53,15 @@ export function getExportNeighbors(videoId, n, count) {
     return jsonFetch(`/api/export/neighbors?${qs}`);
 }
 
+// Confirmed mode's "Similars" preview -- a fresh visual search seeded by
+// the confirmed frame itself (see backend/export.py's
+// similar_candidates_for_frame), not the opener tab's original query
+// results. Same {video_id, n, results} shape as getExportNeighbors above.
+export function getExportSimilar(videoId, n, count) {
+    const qs = new URLSearchParams({ video_id: videoId, n, count });
+    return jsonFetch(`/api/export/similar?${qs}`);
+}
+
 export async function uploadQueryImage(blob) {
     const form = new FormData();
     form.append("file", blob, "query.png");

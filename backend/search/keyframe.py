@@ -79,3 +79,24 @@ def search_siglip2_frame(query, k: int = config.FETCH_K) -> pd.DataFrame:
     result = _search_frame(index, lookup_df, qvec, k)
     _siglip2_cache[cache_key] = result
     return result
+
+
+def search_siglip2_by_frame(video_id: str, n: int, k: int = config.FETCH_K) -> pd.DataFrame:
+    """Same ranking as search_siglip2_frame(), but the query is an existing
+    keyframe already in the index (by video_id + 1-indexed n) rather than
+    typed text or a pasted image -- reuses that keyframe's own stored
+    embedding (index.reconstruct) instead of re-encoding a thumbnail
+    through SigLIP2, so it's exact and needs no image bytes at all. Used
+    by the export popup's confirmed-mode "Similars" tier: a fresh visual
+    search seeded by the confirmed frame itself, rather than reusing
+    whatever the opener tab's last query happened to be. The queried frame
+    itself always comes back as the top hit (score 1.0, cosine similarity
+    with itself) -- callers that don't want it in the results filter it
+    out themselves (see backend/export.py)."""
+    index, lookup_df = _get_frame_index(config.FRAME_SIGLIP2_GLOB)
+    frame_id = int(n) - 1
+    matches = lookup_df.index[(lookup_df["video_id"] == video_id) & (lookup_df["frame_id"] == frame_id)]
+    if len(matches) == 0:
+        raise ValueError(f"no indexed frame for {video_id} n={n}")
+    qvec = index.reconstruct(int(matches[0]))
+    return _search_frame(index, lookup_df, qvec, k + 1)

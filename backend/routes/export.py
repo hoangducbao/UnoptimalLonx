@@ -77,9 +77,18 @@ def _safe_filename(name: str) -> str:
 
 @router.post("/api/export")
 def export_csv(body: ExportRequest):
+    # Confirmed mode's "similar" tier is a fresh visual search seeded by
+    # the confirmed frame itself, not the opener tab's original query
+    # candidates -- see backend/export.py's module docstring and
+    # similar_candidates_for_frame(). Unconfirmed mode has no single
+    # confirmed frame to re-query from, so it keeps using whatever
+    # candidates the frontend sent (the opener tab's last search results).
+    candidates = body.candidates
     try:
+        if body.mode == "confirmed" and body.confirmed:
+            candidates = export_mod.similar_candidates_for_frame(body.confirmed["video_id"], body.confirmed["n"])
         rows = export_mod.generate_export(
-            body.candidates, body.mode,
+            candidates, body.mode,
             confirmed=body.confirmed, answers=body.answers,
             neighbour_count=body.neighbour_count, max_rows=body.max_rows,
         )
@@ -136,3 +145,15 @@ def get_export_neighbors(video_id: str, n: int, count: int = export_mod.DEFAULT_
             for nb in ns
         ],
     }
+
+
+@router.get("/api/export/similar")
+def get_export_similar(video_id: str, n: int, count: int = export_mod.DEFAULT_SIMILAR_COUNT):
+    """Confirmed mode's "Similars" preview -- same visual-search-by-frame
+    pool /api/export itself uses to build the CSV in confirmed mode (see
+    export_csv above), exposed so the popup can show it before exporting."""
+    try:
+        results = export_mod.similar_candidates_for_frame(video_id, n, k=count)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"video_id": video_id, "n": n, "results": results}

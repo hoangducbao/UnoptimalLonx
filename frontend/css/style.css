@@ -283,7 +283,7 @@ button {
     margin-bottom: 0.75rem;
 }
 .export-topbar .segmented { flex: none; }
-.export-topbar input#exp-name { flex: 0 0 110px; }
+.export-topbar input#exp-name { flex: 0 0 330px; }
 .export-topbar .export-actions { flex: none; margin-left: auto; }
 
 .export-answer-area { margin: 0.75rem 0; }
@@ -292,9 +292,9 @@ button {
 .export-answer-list { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.5rem; }
 .export-answer-card {
     position: relative;
-    width: 220px;
-    font-size: 0.78rem;
-    padding: 0.3rem;
+    width: 286px;
+    font-size: 1.01rem;
+    padding: 0.39rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: #fff;
@@ -308,9 +308,9 @@ button {
        cards" section), which -- with no z-index of its own -- would paint
        above this sibling button despite coming first in the markup. */
     z-index: 200;
-    width: 20px;
-    height: 20px;
-    font-size: 0.7rem;
+    width: 26px;
+    height: 26px;
+    font-size: 0.91rem;
 }
 
 .export-preview-area {
@@ -347,12 +347,17 @@ button {
 }
 .export-add-btn.added { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-.trake-event-list { display: flex; flex-direction: column; gap: 0.5rem; }
+/* 2 columns, as many rows as needed (a 6-event list reads as a 3x2 table --
+   3 rows of 2) -- was a single 6x1 column of wide rows; the image is what
+   should read first in a table cell this small, so each cell stacks its
+   thumbnail (full cell width -- see .trake-event-row .thumb-wrap below)
+   above its one-line E#/frame# caption instead of sitting beside it. */
+.trake-event-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
 .trake-event-row {
     position: relative;
     display: flex;
-    align-items: center;
-    gap: 0.6rem;
+    flex-direction: column;
+    gap: 0.2rem;
     padding: 0.4rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -370,8 +375,11 @@ button {
     height: 20px;
     font-size: 0.7rem;
 }
-.trake-event-row .thumb-wrap, .trake-event-row .thumb-missing { width: 70px; flex: none; }
-.trake-event-fields { flex: 1; }
+.trake-event-row .thumb-wrap, .trake-event-row .thumb-missing { width: 100%; flex: none; }
+/* E#/frame# captions -- half the size of .thumb-caption's usual (inherited,
+   1rem) size, now that the thumbnail above carries the cell's size instead. */
+.trake-event-fields { flex: none; text-align: center; }
+.trake-event-fields .thumb-caption { font-size: 0.75rem; margin-top: 0.1rem; }
 
 /* TRAKE curate/cache/merge panel (export-ui.js's ensureTrakeSkeleton) --
    .playback-timer above is shared with the modal playback dialogs, but

@@ -16,7 +16,7 @@ from .. import config
 from .. import metadata_filter as md
 from .. import od_filter as od
 from ..common import apply_filters, df_to_results, parse_lot_range
-from ..models import is_image_query
+from ..models import is_image_query, siglip2_truncation_warning
 from ..search import asr as asr_mod
 from ..search import caption as cap_mod
 from ..search import keyframe as kf
@@ -69,11 +69,15 @@ def search_keyframe(body: KeyframeSearchRequest):
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     od_matched, od_unmatched = od.match_classes(body.od_filter)
     od_warning = od.unmatched_warning(od_unmatched)
+    # Keyframe is SigLIP2-only (see docstring above), so a too-long query
+    # takes priority over the OD warning -- it affects every result, not
+    # just the ones an unmatched OD class would have narrowed.
+    trunc_warning = None if is_image_query(query) else siglip2_truncation_warning(query)
 
     df = apply_filters(kf.search_siglip2_frame(query, k=fetch_k), body.video_filter, lot_filter)
     df = md.apply_facet_filter(df, body.facet_field, body.facet_value)
     filtered = od.apply_od_filter(df, od_matched)
-    return KeyframeSearchResponse(warning=od_warning, results=df_to_results(filtered.head(top_k), "score"))
+    return KeyframeSearchResponse(warning=trunc_warning or od_warning, results=df_to_results(filtered.head(top_k), "score"))
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +120,9 @@ def search_asr(body: TextSignalSearchRequest):
     image_query = is_image_query(query)
     od_matched, od_unmatched = od.match_classes(body.od_filter)
     od_warning = od.unmatched_warning(od_unmatched)
+    # Only the siglip leg (below) is subject to the 64-token cap -- the
+    # fuzzy leg's own warning, further down, is untouched by this.
+    trunc_warning = None if image_query else siglip2_truncation_warning(query)
 
     siglip_df = fuzzy_df = None
     fuzzy_warning = None
@@ -130,7 +137,7 @@ def search_asr(body: TextSignalSearchRequest):
     resp = TextSignalSearchResponse()
     if body.legs.siglip:
         filtered = od.apply_od_filter(asr_mod.attach_keyframe_asr(siglip_df), od_matched)
-        resp.siglip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
+        resp.siglip = LegResult(warning=trunc_warning or od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
     if body.legs.fuzzy:
         filtered = od.apply_od_filter(asr_mod.attach_keyframe_asr(fuzzy_df), od_matched)
         resp.fuzzy = LegResult(warning=fuzzy_warning or od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
@@ -153,6 +160,9 @@ def search_caption(body: TextSignalSearchRequest):
     image_query = is_image_query(query)
     od_matched, od_unmatched = od.match_classes(body.od_filter)
     od_warning = od.unmatched_warning(od_unmatched)
+    # Only the siglip leg (below) is subject to the 64-token cap -- the
+    # fuzzy leg's own warning, further down, is untouched by this.
+    trunc_warning = None if image_query else siglip2_truncation_warning(query)
 
     siglip_df = fuzzy_df = None
     fuzzy_warning = None
@@ -167,7 +177,7 @@ def search_caption(body: TextSignalSearchRequest):
     resp = TextSignalSearchResponse()
     if body.legs.siglip:
         filtered = od.apply_od_filter(cap_mod.attach_keyframe_caption(siglip_df), od_matched)
-        resp.siglip = LegResult(warning=od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
+        resp.siglip = LegResult(warning=trunc_warning or od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
     if body.legs.fuzzy:
         filtered = od.apply_od_filter(cap_mod.attach_keyframe_caption(fuzzy_df), od_matched)
         resp.fuzzy = LegResult(warning=fuzzy_warning or od_warning, results=df_to_results(filtered.head(top_k), "score", "text"))
@@ -188,6 +198,9 @@ def search_summary(body: TextSignalSearchRequest):
     fetch_k = max(config.FETCH_K, top_k)
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     image_query = is_image_query(query)
+    # Only the siglip leg (below) is subject to the 64-token cap -- the
+    # fuzzy leg's own warning, further down, is untouched by this.
+    trunc_warning = None if image_query else siglip2_truncation_warning(query)
 
     siglip_df = fuzzy_df = None
     fuzzy_warning = None
@@ -201,7 +214,7 @@ def search_summary(body: TextSignalSearchRequest):
 
     resp = TextSignalSearchResponse()
     if body.legs.siglip:
-        resp.siglip = LegResult(results=df_to_results(sum_mod.attach_keyframe_summary(siglip_df).head(top_k), "score", "text"))
+        resp.siglip = LegResult(warning=trunc_warning, results=df_to_results(sum_mod.attach_keyframe_summary(siglip_df).head(top_k), "score", "text"))
     if body.legs.fuzzy:
         resp.fuzzy = LegResult(warning=fuzzy_warning, results=df_to_results(sum_mod.attach_keyframe_summary(fuzzy_df).head(top_k), "score", "text"))
     if body.legs.rrf:
@@ -301,10 +314,17 @@ def search_mixed(body: MixedSearchRequest):
     od_warning = od.unmatched_warning(od_unmatched)
 
     sub_dfs, sub_weights = {}, {}
+    # OCR sub-queries have no SigLIP2 leg at all (search/ocr.py is
+    # fuzzy-only), so they're exempt from the token-limit check below --
+    # every other signal option here (Keyframe/ASR/Caption) always runs a
+    # SigLIP2 leg internally, via trake_search_event().
+    truncated_labels = []
     for i, q in enumerate(body.queries):
         text = q.text.strip()
         if not text or q.weight <= 0:
             continue
+        if q.signal != "OCR" and siglip2_truncation_warning(text):
+            truncated_labels.append(f"#{i + 1}")
         df = trake_mod.trake_search_event(
             text, q.signal, fetch_k, body.video_filter, lot_filter,
             facet_field=body.facet_field, facet_value=body.facet_value,
@@ -315,6 +335,14 @@ def search_mixed(body: MixedSearchRequest):
 
     if not sub_dfs:
         return MixedSearchResponse(empty=True)
+
+    trunc_warning = None
+    if truncated_labels:
+        trunc_warning = (
+            f"Sub-quer{'y' if len(truncated_labels) == 1 else 'ies'} "
+            f"{', '.join(truncated_labels)} too long for SigLIP2's embedding legs -- "
+            f"only the first ~64 tokens of each were used (fuzzy legs unaffected)."
+        )
 
     # trake_search_event() already applies the facet filter per sub-query,
     # so only OD filtering (which it doesn't apply) needs to happen here,
@@ -329,4 +357,4 @@ def search_mixed(body: MixedSearchRequest):
         # produced) -- opt-in since it's an extra per-row lookup.
         for r in results:
             r["text"] = asr_mod.transcript_for_frame(r["video_id"], r["n"])
-    return MixedSearchResponse(warning=od_warning, results=results)
+    return MixedSearchResponse(warning=trunc_warning or od_warning, results=results)

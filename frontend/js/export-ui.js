@@ -42,13 +42,19 @@
 // `trigger` shapes:
 //   {kind: "flat", video_id, n}         -- any non-TRAKE signal's result card
 //   {kind: "trake", candidate}          -- a TRAKE candidate card
-//   {kind: "frame", video_id, frame_idx} -- a raw native frame from a video
-//     playback dialog, no keyframe n at all (TRAKE-only: KIS/VQA need an n
-//     for the backend's flat CSV path, which this trigger doesn't have).
+//   {kind: "frame", video_id, frame_idx, current_time?, thumbnail?} -- a raw
+//     native frame from a video playback dialog, no keyframe n at all
+//     (TRAKE-only: KIS/VQA need an n for the backend's flat CSV path, which
+//     this trigger doesn't have). current_time/thumbnail are optional --
+//     dialogs.js's "Export this frame" buttons send both (the playback
+//     dialog's own currentTime + a canvas snapshot) so the curation video
+//     below resumes from the same spot and the seeded event gets a real
+//     preview; a trigger without them still works, just starts the
+//     curation video at 0:00 with no event thumbnail, as before.
 
-import { exportCsv, getExportFrame, getExportNeighbors, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
+import { exportCsv, getExportFrame, getExportNeighbors, getExportSimilar, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
 import { fmtTime } from "./format.js";
-import { applyVideoPrefs, bindSpeedShortcut } from "./video-controls.js";
+import { applyVideoPrefs, bindSpeedShortcut, captureVideoThumbnail } from "./video-controls.js";
 
 const NEIGHBOUR_COUNT_EXPORT = 10; // fixed row-generation window, independent of preview expand state
 const PREVIEW_PAGE = 12; // 3x4 grid per preview section (export-preview-grid is 4 columns wide)
@@ -68,6 +74,8 @@ function freshState(trigger) {
         frameInfo: new Map(),        // "vid|n" -> {frame_idx, thumbnail_url} | "pending"
         neighbourFrames: null,       // cached /api/export/neighbors result (grows with `neighboursShown`)
         neighboursShown: PREVIEW_PAGE,
+        similarFrames: null,         // confirmed mode: cached /api/export/similar result, keyed to similarFramesKey below
+        similarFramesKey: null,      // frameKey(answerFrame) similarFrames was fetched for -- refetch when the confirmed frame changes
         similarsShown: PREVIEW_PAGE,
         dragIndex: null,
         // TRAKE: no confirmed/unconfirmed distinction any more -- one
@@ -167,7 +175,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             <button type="button" data-type="VQA">VQA</button>
             <button type="button" data-type="TRAKE">TRAKE</button>
           </div>
-          <input type="number" id="exp-name" min="1" step="1" placeholder="Query no.">
+          <input type="number" id="exp-name" min="1" step="1" placeholder="QUERY NUMBER - REQUIRED">
           <div class="export-change-fields" id="exp-change-fields">
             <input type="text" id="exp-change-video" placeholder="Vid ID">
             <input type="text" id="exp-change-frame" placeholder="Frame ID">
@@ -198,7 +206,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             <button class="btn" id="exp-nbr-more">Show 12 more</button>
           </div>
           <div class="export-preview-section">
-            <div class="export-preview-header"><b>Similars</b> <span class="thumb-caption muted">(this query's ranked results)</span></div>
+            <div class="export-preview-header"><b>Similars</b> <span class="thumb-caption muted" id="exp-sim-caption">(this query's ranked results)</span></div>
             <div class="grid export-preview-grid" id="exp-sim-grid"></div>
             <button class="btn" id="exp-sim-more">Show 12 more</button>
           </div>
@@ -392,21 +400,52 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             el("#exp-nbr-more").style.display = s.neighbourFrames.length >= s.neighboursShown ? "block" : "none";
         }
 
-        // Similars -- the query's own already-fetched, already-ranked results.
-        // These may be TRAKE-shaped ({video_id, events}, no .n) if the
-        // opener tab's last search was a real TRAKE search -- previewCardHtml
-        // needs a flat {video_id, n} shape, so fall back to a plain message
-        // rather than rendering broken cards.
-        const candidates = getCandidates();
+        // Similars. Confirmed mode: a fresh visual search seeded by the
+        // confirmed frame itself (getExportSimilar, see backend/export.py's
+        // similar_candidates_for_frame) -- "similar to the picked image",
+        // not whatever the opener tab's last query happened to find.
+        // Unconfirmed mode has no single confirmed frame to re-query from,
+        // so it still shows the opener tab's own already-fetched, already-
+        // ranked results (getCandidates()); those may be TRAKE-shaped
+        // ({video_id, events}, no .n) if the opener tab's last search was a
+        // real TRAKE search -- previewCardHtml needs a flat {video_id, n}
+        // shape, so fall back to a plain message rather than rendering
+        // broken cards.
         const simGrid = el("#exp-sim-grid");
-        if (candidates.length && !("n" in candidates[0])) {
-            simGrid.innerHTML = `<div class="status-banner info">Last search wasn't a flat-result signal -- no Similars to preview.</div>`;
-            el("#exp-sim-more").style.display = "none";
+        el("#exp-sim-caption").textContent = replaceable ? "(visual search from the confirmed frame)" : "(this query's ranked results)";
+        if (replaceable) {
+            if (!s.answerFrame) {
+                simGrid.innerHTML = `<div class="status-banner info">No confirmed frame to search similar images from.</div>`;
+                el("#exp-sim-more").style.display = "none";
+            } else {
+                const key = frameKey(s.answerFrame);
+                if (s.similarFramesKey !== key || !s.similarFrames || s.similarFrames.length < s.similarsShown) {
+                    simGrid.innerHTML = `<div class="status-banner info">Loading…</div>`;
+                    try {
+                        const data = await getExportSimilar(s.answerFrame.video_id, s.answerFrame.n, s.similarsShown);
+                        s.similarFrames = data.results;
+                        s.similarFramesKey = key;
+                    } catch (e) {
+                        simGrid.innerHTML = `<div class="status-banner error">${e.message}</div>`;
+                        return;
+                    }
+                }
+                const similars = s.similarFrames.slice(0, s.similarsShown);
+                simGrid.innerHTML = similars.map((c) => previewCardHtml(c, { addable, replaceable }))
+                    .join("") || `<div class="status-banner info">No similar frames found.</div>`;
+                el("#exp-sim-more").style.display = s.similarFrames.length >= s.similarsShown ? "block" : "none";
+            }
         } else {
-            const similars = candidates.slice(0, s.similarsShown);
-            simGrid.innerHTML = similars.map((c) => previewCardHtml(c, { addable, replaceable }))
-                .join("") || `<div class="status-banner info">No results from the last search.</div>`;
-            el("#exp-sim-more").style.display = candidates.length > s.similarsShown ? "block" : "none";
+            const candidates = getCandidates();
+            if (candidates.length && !("n" in candidates[0])) {
+                simGrid.innerHTML = `<div class="status-banner info">Last search wasn't a flat-result signal -- no Similars to preview.</div>`;
+                el("#exp-sim-more").style.display = "none";
+            } else {
+                const similars = candidates.slice(0, s.similarsShown);
+                simGrid.innerHTML = similars.map((c) => previewCardHtml(c, { addable, replaceable }))
+                    .join("") || `<div class="status-banner info">No results from the last search.</div>`;
+                el("#exp-sim-more").style.display = candidates.length > s.similarsShown ? "block" : "none";
+            }
         }
 
         if (addable) {
@@ -447,32 +486,24 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     // --- TRAKE: curate one video's events -> cache its generated rows ->
     // merge however many cached videos into the final export -----------
 
-    // Grabs a JPEG data URL of whatever frame `video` is showing right
-    // now -- this is the "cache the thumbnail at add-time" half of the
-    // spec, since a raw native frame has no existing thumbnail file to
-    // point at the way a keyframe does. The video element is same-origin
-    // (served from this app's own /media/video mount), so the canvas
-    // isn't tainted; still guarded in case a frame isn't decoded yet.
-    function captureVideoThumbnail(video) {
-        try {
-            const w = video.videoWidth || 320, h = video.videoHeight || 180;
-            const canvas = document.createElement("canvas");
-            canvas.width = 160;
-            canvas.height = Math.round(160 * (h / w));
-            canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-            return canvas.toDataURL("image/jpeg", 0.7);
-        } catch (e) {
-            return null;
-        }
-    }
-
     // Loads (or switches the curation panel to) a video: fetches playback
     // info and builds a fresh <video>. Switching to a *different* video
     // than the one currently being curated starts a clean event list --
     // any cache entry already generated for either video is untouched
     // (cache entries persist independently of what's in the live curation
     // panel, see generateRowsForCurationVideo()).
-    async function loadCurationVideo(videoId) {
+    // `seekTime` (seconds) picks up video playback exactly where the user
+    // left it in whatever dialog they hit "Export this frame" from (see
+    // dialogs.js's current_time handoff). `seekN` is the alternative for a
+    // keyframe-backed frame (a KIS/VQA confirmed/answer frame, switched to
+    // TRAKE, or a "flat" trigger's own seed): rather than convert n to a
+    // time ourselves, /api/playback already resolves a keyframe's own
+    // timestamp server-side (same lookup a KIS/VQA playback dialog uses),
+    // so passing it as `n` here gets the exact same start_time. Neither
+    // given (both default) starts at 0:00, same as before, for every other
+    // way this panel gets loaded/switched (typed Video ID, a plain video
+    // switch, a "trake" trigger's own multi-event seeding).
+    async function loadCurationVideo(videoId, { seekTime = 0, seekN = null } = {}) {
         videoId = (videoId || "").trim().toUpperCase();
         if (!videoId) return;
         if (videoId !== s.trake.videoId) {
@@ -485,12 +516,13 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         const wrap = el("#trake-video-wrap");
         if (wrap) wrap.innerHTML = `<div class="status-banner info">Loading…</div>`;
         try {
-            const data = await getPlayback(videoId);
+            const data = await getPlayback(videoId, seekN ?? undefined);
             if (el("#trake-video-wrap") !== wrap) return; // panel torn down mid-fetch (query type switched away)
             s.trake.fps = data.fps;
             wrap.innerHTML = "";
             const video = document.createElement("video");
-            video.src = data.video_url;
+            const t = seekN != null ? data.start_time : seekTime;
+            video.src = data.video_url + (t > 0 ? `#t=${t}` : "");
             video.controls = true;
             wrap.append(video);
             applyVideoPrefs(video);
@@ -513,13 +545,24 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     // Enforces the one hard constraint: a TRAKE export row is exactly one
     // video, so a frame from a different video is rejected rather than
     // silently starting a second, unrepresentable sequence.
+    //
+    // Inserted in temporal order (by frame_idx) rather than always
+    // appended -- adding an earlier frame after later ones (e.g. scrubbing
+    // back, or the Frame ID box) lands it in the right spot immediately
+    // instead of needing a manual drag to fix the sequence. Assumes the
+    // list is already ordered, which holds as long as every addition goes
+    // through here; drag-to-reorder can still freely override this after
+    // the fact.
     function addTrakeEvent(f) {
         if (s.trake.videoId && f.video_id !== s.trake.videoId) {
             showStatus(`Currently curating ${s.trake.videoId} -- this frame is from a different video. Switch videos above first if you meant to add it there.`);
             return false;
         }
         if (!s.trake.videoId) s.trake.videoId = f.video_id;
-        s.trake.events.push({ frame_idx: f.frame_idx, thumbnail: f.thumbnail ?? null });
+        const entry = { frame_idx: f.frame_idx, thumbnail: f.thumbnail ?? null };
+        const insertAt = s.trake.events.findIndex((e) => e.frame_idx > entry.frame_idx);
+        if (insertAt === -1) s.trake.events.push(entry);
+        else s.trake.events.splice(insertAt, 0, entry);
         clearStatus();
         renderEventList();
         return true;
@@ -579,8 +622,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
                     ? `<div class="thumb-wrap thumb-wrap-static"><img src="${e.thumbnail}" loading="lazy"></div>`
                     : `<div class="thumb-missing">no preview</div>`}
                 <div class="trake-event-fields">
-                    <div class="thumb-caption"><b>E${i + 1}</b></div>
-                    <div class="thumb-caption muted">frame ${e.frame_idx}</div>
+                    <div class="thumb-caption"><b>E${i + 1}</b> <span class="muted">· frame ${e.frame_idx}</span></div>
                 </div>
                 <button class="icon-btn export-remove-btn" title="Remove" data-index="${i}">✕</button>
             </div>`).join("");
@@ -753,11 +795,19 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
 
     el("#exp-segmented").querySelectorAll("button").forEach((btn) => {
         btn.onclick = () => {
+            // Snapshot before s.queryType flips -- whichever KIS/VQA frame
+            // was in play (confirmed mode's single answerFrame, or
+            // unconfirmed's first pick) is "the chosen keyframe" a switch
+            // into TRAKE should match playback to, so the curation video
+            // resumes at that exact keyframe's timestamp instead of 0:00.
+            const enteringTrake = btn.dataset.type === "TRAKE" && s.queryType !== "TRAKE";
+            const seedFrame = enteringTrake ? (s.answerFrame || s.answers[0] || null) : null;
             s.queryType = btn.dataset.type;
             renderTypeVisibility();
             renderTrakeContent();
             renderAnswerContent();
             renderPreview(); // replaceable depends on queryType (TRAKE has no single answer frame)
+            if (seedFrame) loadCurationVideo(seedFrame.video_id, { seekN: seedFrame.n });
         };
     });
     el("#exp-name").oninput = (e) => { s.name = e.target.value; };
@@ -833,6 +883,26 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         }
 
         if (s.queryType === "TRAKE") {
+            const exportBtn = el("#exp-export");
+            // Nothing generated at all yet (fresh cache): rather than make
+            // the user click "Generate rows" first, generate the currently
+            // curated video's rows on the fly -- only for this true "0
+            // rows anywhere" case, not e.g. "generated but unchecked",
+            // which stays today's explicit error below.
+            if (!s.trake.cache.size) {
+                if (!s.trake.videoId || !s.trake.events.length) {
+                    showStatus("Nothing to export -- curate a video, click \"Generate rows\", then check it below.");
+                    return;
+                }
+                exportBtn.disabled = true;
+                try {
+                    await generateRowsForCurationVideo();
+                } finally {
+                    exportBtn.disabled = false;
+                }
+                if (!s.trake.cache.size) return; // generation failed -- generateRowsForCurationVideo() already showed why
+            }
+
             // Client-side merge of the per-video cache -- no candidates/
             // confirmed/answers body to build, unlike KIS/VQA below.
             const merged = mergeTrakeCache(99);
@@ -841,7 +911,6 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
                 return;
             }
             const filename = queryFilename("TRAKE", s.name);
-            const exportBtn = el("#exp-export");
             exportBtn.disabled = true;
             try {
                 await writeTrakeCsv(merged, filename);
@@ -935,7 +1004,17 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         addTrakeEventFromN(trigger.video_id, trigger.n);
     } else if (trigger.kind === "frame") {
         seedVideoId = trigger.video_id;
-        addTrakeEvent({ video_id: trigger.video_id, frame_idx: trigger.frame_idx });
+        // thumbnail/current_time come from the playback dialog's own
+        // canvas-snapshot + currentTime at the moment "Export this frame"
+        // was clicked (dialogs.js) -- gives this event a real preview
+        // instead of "no preview", and lets the curation video below
+        // resume from the same spot instead of restarting at 0:00.
+        addTrakeEvent({ video_id: trigger.video_id, frame_idx: trigger.frame_idx, thumbnail: trigger.thumbnail ?? null });
     }
-    if (seedVideoId) loadCurationVideo(seedVideoId);
+    if (seedVideoId) {
+        loadCurationVideo(seedVideoId,
+            trigger.kind === "frame" ? { seekTime: trigger.current_time || 0 }
+                : trigger.kind === "flat" ? { seekN: trigger.n }
+                    : {});
+    }
 }

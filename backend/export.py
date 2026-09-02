@@ -19,6 +19,17 @@ similar" tiers):
   unconfirmed mode: [user-ordered answer frames, kept in order] + [similar-
                     semantic candidates] + [nearest keyframes by time of
                     each similar, as filler] -- up to max_rows.
+Confirmed mode's "similar-semantic candidates" are a fresh visual search
+seeded by the confirmed frame itself (similar_candidates_for_frame()
+below, backed by backend/search/keyframe.py's SigLIP2 frame index) rather
+than the caller's original query results -- "similar to the picked
+image", since a human just confirmed *that* frame is the answer, not
+necessarily the best-ranked hit of whatever query found it. Unconfirmed
+mode has no single confirmed frame to re-query from, so it still uses
+the caller-supplied candidates (the opener tab's last search results)
+as before. Either way, generate_export() below just takes whatever
+`candidates` list it's given -- routes/export.py's /api/export handler
+is what picks which one to pass, per mode.
 "Nearest keyframes by time" is deliberately keyframe-only for now (picks
 from the video's own existing extracted n's, ordered by |n - center| --
 equivalent to time-gap order since map-keyframes rows are chronological) --
@@ -59,9 +70,11 @@ them.
 from random import Random
 from typing import Optional
 
-from .common import frame_idx_for_n, n_for_frame_idx, native_frame_range_for_video, valid_ns_for_video
+from .common import df_to_results, frame_idx_for_n, n_for_frame_idx, native_frame_range_for_video, valid_ns_for_video
+from .search import keyframe as kf_mod
 
 DEFAULT_NEIGHBOUR_COUNT = 10
+DEFAULT_SIMILAR_COUNT = 99  # confirmed-mode "Similars" pool -- generous enough to fill max_rows after dedup/filler
 
 
 def _flat_key(video_id, n) -> tuple:
@@ -82,6 +95,21 @@ def nearest_keyframes_by_time(video_id: str, center_n: int, count: int) -> list:
     valid_ns = [n for n in valid_ns_for_video(video_id) if n != center_n]
     valid_ns.sort(key=lambda n: abs(n - center_n))
     return valid_ns[:count]
+
+
+def similar_candidates_for_frame(video_id: str, n: int, k: int = DEFAULT_SIMILAR_COUNT) -> list:
+    """Confirmed mode's "Similars" tier: a fresh visual (SigLIP2 keyframe)
+    search seeded by the confirmed frame's own embedding, instead of
+    whatever candidates the opener tab's last query happened to produce --
+    "similar to the picked image", not "similar to the original text/other
+    query". Same {video_id, n, rank, score_label, score_val, text}
+    candidate shape df_to_results() already returns for every other
+    signal, re-ranked 1..k after the confirmed frame itself (always the
+    top hit, cosine similarity 1.0 with itself) is dropped."""
+    df = kf_mod.search_siglip2_by_frame(video_id, n, k=k)
+    df = df[~((df["video_id"] == video_id) & (df["n"] == int(n)))].head(k).reset_index(drop=True)
+    df["rank"] = range(1, len(df) + 1)
+    return df_to_results(df, "score")
 
 
 def generate_export(candidates: list, mode: str,

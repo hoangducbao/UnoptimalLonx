@@ -203,5 +203,11 @@ export async function run(resultsEl, statusEl) {
     const h = document.createElement("h2");
     h.textContent = "TRAKE";
     resultsEl.append(h);
+    if (data.warning) {
+        const warn = document.createElement("div");
+        warn.className = "status-banner warn";
+        warn.textContent = data.warning;
+        resultsEl.append(warn);
+    }
     for (const c of data.candidates) renderCandidate(resultsEl, c);
 }
