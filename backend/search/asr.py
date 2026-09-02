@@ -81,27 +81,35 @@ def search_siglip_asr(query, k: int = config.FETCH_K) -> pd.DataFrame:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Two Elasticsearch legs over the same asr_segments index, differing only in
+# the query body: `fuzzy` casts wide (fuzziness AUTO + the implicit OR
+# operator -- some of the query words, approximately matched), `exact` casts
+# narrow (match_phrase -- every word, contiguous and in order). Everything
+# wrapped around that query is identical, so it lives once in _es_leg() and
+# each leg is a thin wrapper with its own cache.
+# ---------------------------------------------------------------------------
+
+_EMPTY_ES = pd.DataFrame(columns=["rank", "score", "video_id", "segment_id", "start_sec", "text"])
 _fuzzy_cache = TTLCache(maxsize=256, ttl=300)
-_EMPTY_FUZZY = pd.DataFrame(columns=["rank", "score", "video_id", "segment_id", "start_sec", "text"])
+_exact_cache = TTLCache(maxsize=256, ttl=300)
 
 
-def search_asr_fuzzy(query, k: int = config.FETCH_K):
+def _es_leg(query, k: int, es_query: dict, cache: TTLCache, label: str):
     """Returns (df, warning). warning is a str (mirrors ui/app.py's
-    st.warning) if ES was unreachable, else None -- fuzzy legs need text,
+    st.warning) if ES was unreachable, else None -- these legs need text,
     so an image query short-circuits to an empty df with no warning."""
     if is_image_query(query):
-        return _EMPTY_FUZZY, None
+        return _EMPTY_ES, None
     cache_key = (query_hash(query), k)
-    if cache_key in _fuzzy_cache:
-        return _fuzzy_cache[cache_key], None
+    if cache_key in cache:
+        return cache[cache_key], None
     try:
         ensure_asr_fuzzy_index()
         es = get_es_client()
-        resp = es.search(index=config.ES_INDEX_ASR, size=k, query={
-            "match": {"text": {"query": query, "fuzziness": "AUTO"}}
-        })
+        resp = es.search(index=config.ES_INDEX_ASR, size=k, query=es_query)
     except Exception as e:
-        return _EMPTY_FUZZY, f"[ASR fuzzy] Elasticsearch not reachable at {config.ES_HOST} ({e}) — showing other legs only."
+        return _EMPTY_ES, f"[ASR {label}] Elasticsearch not reachable at {config.ES_HOST} ({e}) — showing other legs only."
 
     rows = []
     for rank, hit in enumerate(resp["hits"]["hits"], start=1):
@@ -109,8 +117,22 @@ def search_asr_fuzzy(query, k: int = config.FETCH_K):
         rows.append({"rank": rank, "score": float(hit["_score"]), "video_id": src["video_id"],
                       "segment_id": src["segment_id"], "start_sec": src["start_sec"], "text": src["text"]})
     result = pd.DataFrame(rows)
-    _fuzzy_cache[cache_key] = result
+    cache[cache_key] = result
     return result, None
+
+
+def search_asr_fuzzy(query, k: int = config.FETCH_K):
+    return _es_leg(query, k, {"match": {"text": {"query": query, "fuzziness": "AUTO"}}}, _fuzzy_cache, "fuzzy")
+
+
+def search_asr_exact(query, k: int = config.FETCH_K):
+    """Phrase match: every query term present, contiguous and in order.
+    Case-insensitive but diacritic-sensitive -- the index's standard
+    analyzer lowercases and leaves Vietnamese diacritics intact, so
+    "sut lun" finds nothing where "sụt lún" does. Runs against the same
+    asr_segments index the fuzzy leg already uses -- no mapping change,
+    no reindex."""
+    return _es_leg(query, k, {"match_phrase": {"text": {"query": query}}}, _exact_cache, "exact")
 
 
 def rrf_fuse_asr(named_dfs: dict, k: int = config.RRF_K, top_n: int = config.DISPLAY_N) -> pd.DataFrame:

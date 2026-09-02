@@ -50,6 +50,11 @@ def trake_search_event(query: str, signal: str, fetch_k: int, video_filter: str 
         return _EMPTY if df is None or df.empty else df[["video_id", "n", "rank", "score"]]
 
     if signal == "ASR":
+        # Deliberately siglip + fuzzy only, no `exact` leg: this fusion backs
+        # every Mixed sub-query and TRAKE event, so adding a third input here
+        # would silently reshuffle existing Mixed/TRAKE results. The
+        # standalone /api/search/asr RRF does fuse exact -- the two diverge
+        # on purpose.
         siglip_df = _scoped(asr_mod.search_siglip_asr(query, k=fetch_k))
         fuzzy_raw, _w = asr_mod.search_asr_fuzzy(query, k=fetch_k)
         fuzzy_df = _scoped(fuzzy_raw)
