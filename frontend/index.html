@@ -23,6 +23,9 @@
       <button class="signal-btn" data-signal="Mixed" title="Mixed">🔀</button>
       <button class="signal-btn" data-signal="TRAKE" title="TRAKE">🧭</button>
       <button class="signal-btn" data-signal="Hierarchy" title="Hierarchy">🌳</button>
+      <!-- Not a signal (no data-signal, so app.js's signal wiring skips it):
+           styled as one purely so it sits in the same icon row. -->
+      <button class="signal-btn" id="settings-btn" title="Settings">⚙️</button>
     </div>
 
     <div id="standard-query-section">
@@ -90,14 +93,8 @@
       </div>
     </div>
 
-    <div class="checkbox-row" id="group-by-row">
-      <input type="checkbox" id="group-by-video">
-      <label for="group-by-video" style="margin:0;">Group by video</label>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" id="show-full-text">
-      <label for="show-full-text" style="margin:0;">Show full text</label>
-    </div>
+    <!-- "Group by video" and "Show full text" used to live here; they're
+         saved settings now, in the ⚙ dialog above (frontend/js/settings.js). -->
 
     <hr class="divider">
 

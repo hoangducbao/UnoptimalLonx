@@ -28,6 +28,8 @@ export const searchHierarchy = (body) => postJson("/api/search/hierarchy", body)
 export const expandHierarchy = (body) => postJson("/api/hierarchy/expand", body);
 export const getFacets = () => jsonFetch("/api/facets");
 
+// before/after are the totals wanted on each side of centerN (base window
+// per tile size + however far the popup has been expanded), not deltas.
 export function getNeighbors(videoId, centerN, before, after) {
     const qs = new URLSearchParams({ video_id: videoId, center_n: centerN, before, after });
     return jsonFetch(`/api/neighbors?${qs}`);

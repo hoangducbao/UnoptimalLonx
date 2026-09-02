@@ -36,7 +36,7 @@ index/                  generated FAISS indices + CSV metadata (git-ignored), re
 | Signal | Legs | Notes |
 |---|---|---|
 | Keyframe | SigLIP2 only | frame embeddings; CLIP ViT-B/32 + its Multilingual-CLIP query-time text encoder (XLM-RoBERTa-large) were removed entirely -- that text tower alone cost ~4.6GB RAM lazily loaded, dwarfing every other model/index in this system combined |
-| ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | transcript segments mapped to nearest keyframe |
+| ASR | SigLIP2-ASR, Elasticsearch fuzzy, Elasticsearch exact (match_phrase), RRF | transcript segments mapped to nearest keyframe; exact is ASR-only and diacritic-sensitive |
 | Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | one row per keyframe |
 | OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |
 | Summary | SigLIP2-summary, Elasticsearch fuzzy, RRF | video-level: one result per video |

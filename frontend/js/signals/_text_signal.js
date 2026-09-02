@@ -1,7 +1,8 @@
 // frontend/js/signals/_text_signal.js -- ASR/Caption/Summary share one
 // shape (SigLIP2 leg + fuzzy leg + RRF, ui/app.py:2000-2050, 2063-2087),
 // differing only in labels, the API call, (Summary) group-by-collection
-// instead of group-by-video, and (per-instance) checkbox order/defaults.
+// instead of group-by-video, (per-instance) checkbox order/defaults, and
+// which legs exist at all -- ASR adds a fourth, Exact.
 // This factory avoids repeating that shape three times; OCR is the
 // one-leg exception and gets its own file.
 
@@ -9,18 +10,22 @@ import { renderGrid } from "../render.js";
 import { currentQuery } from "../query-input.js";
 import { resetExportCandidates, scopeFilters } from "../state.js";
 
-const LEG_KEYS = ["siglip", "fuzzy", "rrf"];
+// A panel's `order` is the authoritative list of the legs it actually has --
+// it drives the checkboxes, the request, and the render, so a panel that
+// omits a leg never looks for its checkbox. ASR is the only one that opts
+// into `exact`; Caption/Summary keep the original three.
+const DEFAULT_ORDER = ["siglip", "fuzzy", "rrf"];
 // Export candidates come from the single "best" enabled leg, not every leg
 // rendered on screen -- RRF (fused) is preferred when enabled, since it's
 // the strongest ranking available, falling back to whichever plain leg is
-// on when RRF isn't.
-const EXPORT_LEG_PRIORITY = ["rrf", "siglip", "fuzzy"];
+// on when RRF isn't. Filtered against `order` per panel below.
+const EXPORT_LEG_PRIORITY = ["rrf", "siglip", "exact", "fuzzy"];
 
 export function makeTextSignalPanel({
-    prefix, siglipLabel, fuzzyLabel, rrfLabel, searchFn, groupMode,
-    order = LEG_KEYS, defaults = { siglip: true, fuzzy: true, rrf: true },
+    prefix, siglipLabel, fuzzyLabel, exactLabel, rrfLabel, searchFn, groupMode,
+    order = DEFAULT_ORDER, defaults = { siglip: true, fuzzy: true, rrf: true },
 }) {
-    const labels = { siglip: siglipLabel, fuzzy: fuzzyLabel, rrf: rrfLabel };
+    const labels = { siglip: siglipLabel, fuzzy: fuzzyLabel, exact: exactLabel, rrf: rrfLabel };
     const controlsHtml = order.map((key) => `
     <div class="checkbox-row">
       <input type="checkbox" id="${prefix}-use-${key}"${defaults[key] ? " checked" : ""}>
@@ -63,8 +68,8 @@ export function makeTextSignalPanel({
         }
         statusEl.innerHTML = "";
 
-        const use = Object.fromEntries(LEG_KEYS.map((key) => [key, document.getElementById(`${prefix}-use-${key}`).checked]));
-        if (!use.siglip && !use.fuzzy && !use.rrf) {
+        const use = Object.fromEntries(order.map((key) => [key, document.getElementById(`${prefix}-use-${key}`).checked]));
+        if (!order.some((key) => use[key])) {
             resultsEl.innerHTML = `<div class="status-banner info">Check at least one search option in the sidebar.</div>`;
             return;
         }
@@ -75,7 +80,7 @@ export function makeTextSignalPanel({
             image_id,
             top_k: topK,
             ...scopeFilters(),
-            legs: { siglip: use.siglip, fuzzy: use.fuzzy, rrf: use.rrf },
+            legs: { ...use },  // only this panel's legs; the API defaults the rest
         };
 
         resultsEl.innerHTML = `<div class="status-banner info">Searching…</div>`;
@@ -88,16 +93,16 @@ export function makeTextSignalPanel({
         }
         resultsEl.innerHTML = "";
 
-        const dataKey = { siglip: "siglip", fuzzy: "fuzzy", rrf: "rrf" };
         let exportLeg = null;
         for (const key of EXPORT_LEG_PRIORITY) {
-            const leg = data[dataKey[key]];
+            if (!order.includes(key)) continue;
+            const leg = data[key];
             if (use[key] && leg && !leg.skipped) { exportLeg = leg; break; }
         }
         resetExportCandidates(exportLeg ? exportLeg.results : []);
 
         for (const key of order) {
-            if (use[key]) section(resultsEl, labels[key], data[dataKey[key]]);
+            if (use[key]) section(resultsEl, labels[key], data[key]);
         }
     }
 

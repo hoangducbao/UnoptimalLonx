@@ -6,9 +6,9 @@ import { searchHierarchy, expandHierarchy } from "../api.js";
 import { renderThumb, renderActions } from "../render.js";
 import { currentQuery } from "../query-input.js";
 import { hierExtraG, resetExportCandidates, scopeFilters } from "../state.js";
+import { setGroupByUi, tile } from "../settings.js";
 
 const topGWrap = document.getElementById("top-g-wrap");
-const groupByRow = document.getElementById("group-by-row");
 
 // video_id -> {best, step1_frames, seed_n} -- cached so the seed-picker and
 // "Expand" button can re-drill without re-running Step 1's base search,
@@ -20,12 +20,12 @@ let groupsCache = new Map();
 export function mount(controlsEl) {
     controlsEl.innerHTML = `<div class="thumb-caption muted">SigLIP2 frame search, grouped by video, drilled down to Top-G frames/video. No leg choice -- text or picture query, SigLIP2 only.</div>`;
     topGWrap.style.display = "block";
-    groupByRow.style.display = "none"; // Hierarchy is always grouped by video by construction
+    setGroupByUi({ visible: false }); // Hierarchy is always grouped by video by construction
 }
 
 export function unmount() {
     topGWrap.style.display = "none";
-    groupByRow.style.display = "flex";
+    setGroupByUi();
 }
 
 async function renderGroupFrames(vid, container) {
@@ -44,7 +44,7 @@ async function renderGroupFrames(vid, container) {
 async function redrill(vid, container) {
     const g = groupsCache.get(vid);
     const topK = parseInt(document.getElementById("top-k").value, 10) || 100;
-    const topG = (parseInt(document.getElementById("top-g").value, 10) || 5) + (hierExtraG.get(vid) || 0);
+    const topG = (parseInt(document.getElementById("top-g").value, 10) || tile().topG) + (hierExtraG.get(vid) || 0);
     const data = await expandHierarchy({
         video_id: vid, step1_frames: g.step1_frames, top_g: topG, seed_n: g.seed_n, top_k: topK,
     });
@@ -64,13 +64,16 @@ function renderGroup(container, vid) {
     // Expand stays video-level (it pulls more frames for this one video --
     // there's no per-frame equivalent), separate from the per-frame
     // show-more/play/copy/export buttons now on each drilled frame below.
+    // Step follows the tile-size setting (settings.js's TILE_SIZES), same as
+    // the Top-G default it adds onto: one more row of frames per click.
+    const expandStep = tile().hierExpand;
     const expandBtn = document.createElement("button");
     expandBtn.className = "btn";
-    expandBtn.title = "Pull in 10 more frames from this video";
+    expandBtn.title = `Pull in ${expandStep} more frames from this video`;
     expandBtn.textContent = "⬇ Expand";
     expandBtn.style.margin = "0.3rem 0";
     expandBtn.onclick = () => {
-        hierExtraG.set(vid, (hierExtraG.get(vid) || 0) + 10);
+        hierExtraG.set(vid, (hierExtraG.get(vid) || 0) + expandStep);
         redrill(vid, container);
     };
     container.append(expandBtn);

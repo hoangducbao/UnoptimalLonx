@@ -7,6 +7,8 @@
 import { resetExportCandidates, state } from "./state.js";
 import { setOnSubmit } from "./query-input.js";
 import { initFacets } from "./facets.js";
+import { openSettingsDialog } from "./dialogs.js";
+import { tile } from "./settings.js";
 import * as keyframe from "./signals/keyframe.js";
 import * as asr from "./signals/asr.js";
 import * as caption from "./signals/caption.js";
@@ -45,7 +47,7 @@ function selectSignal(name) {
     const prevMod = currentModule();
     if (prevMod?.unmount) prevMod.unmount();
     state.signal = name;
-    document.querySelectorAll(".signal-btn").forEach((btn) => {
+    document.querySelectorAll(".signal-btn[data-signal]").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.signal === name);
     });
     SIGNALS[name].mount(controlsEl);
@@ -57,8 +59,18 @@ function selectSignal(name) {
     runCurrentSearch();
 }
 
-document.querySelectorAll(".signal-btn").forEach((btn) => {
+document.querySelectorAll(".signal-btn[data-signal]").forEach((btn) => {
     btn.addEventListener("click", () => selectSignal(btn.dataset.signal));
+});
+
+// ⚙ sits in the same icon row but isn't a signal -- it opens the settings
+// dialog (hover zoom, tile size, result counts, grouping) instead of
+// switching modes. Everything in there can change what a search returns or
+// how it's grouped, so a Save just re-runs the current one; the dialog
+// itself writes any changed Top-K/V/G back into the sidebar boxes.
+document.getElementById("top-g").value = tile().topG; // Top-G's default is a property of the tile size
+document.getElementById("settings-btn").addEventListener("click", () => {
+    openSettingsDialog(runCurrentSearch);
 });
 
 // Re-run search on any sidebar control change (mirrors Streamlit's
@@ -66,8 +78,10 @@ document.querySelectorAll(".signal-btn").forEach((btn) => {
 // actually affect a search -- clicking "Show more"/"Copy" doesn't touch
 // these listeners at all, so there's no wasted-recompute problem to guard
 // against here in the first place).
+// ("Group by video"/"Show full text" aren't here any more -- they're saved
+// settings now, and the ⚙ dialog's Save re-runs the search itself.)
 ["top-k", "top-v", "top-g", "video-filter", "lot-filter",
- "group-by-video", "show-full-text", "facet-value"].forEach((id) => {
+ "facet-value"].forEach((id) => {
     document.getElementById(id).addEventListener("change", runCurrentSearch);
 });
 // facet-field is wired by initFacets() below instead of the generic list

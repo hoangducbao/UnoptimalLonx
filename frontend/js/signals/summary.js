@@ -4,8 +4,9 @@
 
 import { searchSummary } from "../api.js";
 import { makeTextSignalPanel } from "./_text_signal.js";
+import { settings, setGroupByUi } from "../settings.js";
 
-const groupMode = () => document.getElementById("group-by-video").checked ? "collection" : null;
+const groupMode = () => settings.groupByVideo ? "collection" : null;
 
 export const { mount: baseMount, run } = makeTextSignalPanel({
     prefix: "sum",
@@ -16,19 +17,18 @@ export const { mount: baseMount, run } = makeTextSignalPanel({
     groupMode,
 });
 
-// Same "Group by video" checkbox everywhere, but its label/meaning flips to
-// "Group by collection" for Summary specifically -- ui/app.py does this by
-// relabeling the same toggle, not adding a second one, so we mirror that
-// here on mount/unmount instead of introducing a Summary-only checkbox.
-const groupLabel = document.querySelector('label[for="group-by-video"]');
-const DEFAULT_LABEL = "Group by video";
+// Same group-by toggle everywhere (now in the Settings dialog), but its
+// label/meaning flips to "Group by collection" for Summary specifically --
+// ui/app.py does this by relabeling the same toggle, not adding a second
+// one, so we mirror that here on mount/unmount instead of introducing a
+// Summary-only setting.
 const SUMMARY_LABEL = "Group by collection";
 
 export function mount(controlsEl) {
-    groupLabel.textContent = SUMMARY_LABEL;
+    setGroupByUi({ label: SUMMARY_LABEL });
     baseMount(controlsEl);
 }
 
 export function unmount() {
-    groupLabel.textContent = DEFAULT_LABEL;
+    setGroupByUi();
 }

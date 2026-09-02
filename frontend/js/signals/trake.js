@@ -7,10 +7,10 @@ import { openTrakePlaybackDialog, openWeightsDialog } from "../dialogs.js";
 import { openExportDialog } from "../export-dialog.js";
 import { signalSelectHtml } from "../signal-select.js";
 import { copyToScope, mixedConfig, resetExportCandidates, scopeFilters, trakeState, TRAKE_EVENT_SIGNALS } from "../state.js";
+import { setGroupByUi } from "../settings.js";
 
 const trakeSection = document.getElementById("trake-query-section");
 const standardSection = document.getElementById("standard-query-section");
-const groupByRow = document.getElementById("group-by-row");
 const topVWrap = document.getElementById("top-v-wrap");
 
 let runRef = () => {};
@@ -89,7 +89,7 @@ export function mount(controlsEl) {
     controlsEl.innerHTML = "";
     standardSection.style.display = "none";
     trakeSection.style.display = "block";
-    groupByRow.style.display = "none";
+    setGroupByUi({ visible: false }); // TRAKE results are per-video sequences already
     topVWrap.style.display = "block";
     renderInputs();
 }
@@ -97,7 +97,7 @@ export function mount(controlsEl) {
 export function unmount() {
     standardSection.style.display = "block";
     trakeSection.style.display = "none";
-    groupByRow.style.display = "flex";
+    setGroupByUi();
     topVWrap.style.display = "none";
 }
 
