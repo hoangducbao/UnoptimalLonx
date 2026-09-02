@@ -4,6 +4,7 @@
 // dispatch. Only Keyframe is wired in Phase 1 -- later phases register
 // more entries in SIGNALS and enable their sidebar buttons.
 
+import { getProfile } from "./api.js";
 import { resetExportCandidates, state } from "./state.js";
 import { setOnSubmit } from "./query-input.js";
 import { initFacets } from "./facets.js";
@@ -114,3 +115,16 @@ controlsEl.addEventListener("change", runCurrentSearch);
 
 selectSignal("Keyframe");
 initFacets(runCurrentSearch);
+
+// Which embedding profile the backend behind THIS tab loaded (768 vs 1152 --
+// see backend/config.py). The two run as separate processes on separate
+// ports and are otherwise pixel-identical, so without this badge it's only a
+// matter of time before a result gets credited to the wrong model. Also
+// stamped into the tab title, for when the tab is too narrow to read.
+getProfile().then(({ profile, dim, model_id }) => {
+    const el = document.getElementById("profile-badge");
+    el.textContent = `${profile}d`;
+    el.dataset.profile = profile;
+    el.title = `${dim}-dim embeddings — ${model_id}`;
+    document.title = `Routing101 (${profile}d)`;
+}).catch(() => { /* badge is informational; a failed fetch shouldn't break the app */ });

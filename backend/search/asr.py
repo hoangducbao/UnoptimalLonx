@@ -26,7 +26,7 @@ def build_siglip_asr_index():
         # transcript_embed/{video_id}.npy + {video_id}.csv (was asr_embed/
         # {video_id}_asr_siglip768.npy + _frames.csv before the rename).
         npy_paths = sorted(config.ASR_EMBED_DIR.glob("*.npy"))
-        index = faiss.IndexFlatIP(768)
+        index = faiss.IndexFlatIP(config.EMBED_DIM)
         rows = []
         gid = 0
         for npy_path in npy_paths:
@@ -38,10 +38,32 @@ def build_siglip_asr_index():
             frames = pd.read_csv(frames_path)
             if len(frames) != vecs.shape[0]:
                 continue
-            index.add(vecs)
-            for _, r in frames.iterrows():
-                rows.append((gid, video_id, int(r["frame_id"]), int(r["segment_id"]),
-                             float(r["start_sec"]), r["text"]))
+            # frame_id is only carried by the 768 profile's transcript CSVs.
+            # The 1152 ones are segment-only (row_index, segment_id,
+            # start_sec, end_sec, chunk_index, text), so resolve the keyframe
+            # by timestamp instead -- the same fallback attach_keyframe_asr()
+            # already applies to the ES fuzzy leg, just done once here at
+            # build time so the meta CSV carries a real n on either profile.
+            has_frame_id = "frame_id" in frames.columns
+            keep_positions, keep_rows = [], []
+            for pos, (_, r) in enumerate(frames.iterrows()):
+                if has_frame_id and pd.notna(r["frame_id"]):
+                    frame_id = int(r["frame_id"])
+                else:
+                    frame_id = nearest_keyframe_n_by_time(video_id, r["start_sec"])
+                if frame_id is None:  # no map-keyframes row to hang this segment on
+                    continue
+                keep_positions.append(pos)
+                keep_rows.append((video_id, frame_id, int(r["segment_id"]),
+                                  float(r["start_sec"]), r["text"]))
+            if not keep_rows:
+                continue
+            # global_id IS the FAISS row position, so vectors and meta rows
+            # have to be dropped together -- adding all of vecs while skipping
+            # a meta row would shift every later segment's lookup by one.
+            index.add(vecs[keep_positions])
+            for row in keep_rows:
+                rows.append((gid, *row))
                 gid += 1
         faiss.write_index(index, str(config.SIGLIP_ASR_FAISS))
         pd.DataFrame(rows, columns=["global_id", "video_id", "frame_id", "segment_id", "start_sec", "text"]).to_csv(config.SIGLIP_ASR_META, index=False)

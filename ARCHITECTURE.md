@@ -29,7 +29,62 @@ pipeline/
   build_class_vocab.py  builds the OD class vocabulary od_filter.py matches against
   *.csv                 per-lot metadata extracted upstream (metadata_filter.py's source)
 index/                  generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
+                        (768 profile at index/routing101_*, 1152 at index/1152/routing101_* -- see Embedding profiles)
 ```
+
+## Embedding profiles
+
+Two SigLIP2 checkpoints, and therefore two vector dimensions, two sets of
+precomputed `.npy` files, and two FAISS index trees. Picked once from the
+`R101_EMBED` environment variable at process start (`backend/config.py`'s
+`_PROFILES`), never from inside the app:
+
+| | `768` (default) | `1152` |
+|---|---|---|
+| Checkpoint | `siglip2-base-patch16-384` | `siglip2-so400m-patch14-384` |
+| Frames | `siglib_embed/` | `1152embed/1152keyframe/` |
+| ASR | `transcript_embed/` | `1152embed/1152transcript/` |
+| Caption | `caption_embed/` | `1152embed/1152caption/` |
+| Summary | `summary_embed/` | `1152embed/1152summary/` |
+| FAISS | `index/routing101_*` | `index/1152/routing101_*` |
+| Resident | ~2.9 GB | ~5.5 GB |
+| Launch | `R101_EMBED=768` → `:8000` | `R101_EMBED=1152` → `:8001` |
+
+Separate processes on separate ports (locally, `run_768.bat` /
+`run_1152.bat`, thin wrappers over a shared `_run_common.bat` bootstrap --
+gitignored, so not in a fresh clone), so both can run at once and answer
+the same query in two tabs; the header pill (`/api/profile` →
+`frontend/js/app.js`) says which one a tab is talking to, since the two are
+otherwise identical on screen. **Not** a runtime switch: at ~5.5GB for the
+1152 profile alone, holding both in one process would roughly double a
+footprint this system has already trimmed once on purpose (see the Keyframe
+row in Signals below, on the removed M-CLIP text tower).
+
+Everything that isn't an embedding is shared and never duplicated per
+dimension: the four Elasticsearch indices (verified: the 1152 transcript
+segment ids match `transcripts/*.csv` exactly, so both profiles' embedding
+legs key on the same `segment_id` space the fuzzy legs do), `map-keyframes`,
+thumbnails, video, the OD vocabulary, the metadata facets, and the whole
+export flow.
+
+Two profile-shaped differences in the data itself, both handled in the
+search modules rather than by reshaping the files:
+
+- **ASR** — the 1152 transcript CSVs are segment-only, with no `frame_id`
+  column. `build_siglip_asr_index()` falls back to
+  `nearest_keyframe_n_by_time()`, the same resolution the ES fuzzy leg has
+  always used, applied once at build time.
+- **Summary** — the 1152 summaries are embedded chunk-by-chunk
+  (`chunks_separate`: 2501 chunks over 785 videos) rather than one vector
+  per summary, because SigLIP2's text tower only sees 64 tokens and a
+  summary runs well past that — the 768 profile silently truncated most of
+  every summary it embedded. So the index holds one row per chunk, and
+  `search_siglip_summary()` overfetches and keeps each video's best-scoring
+  chunk (a max-pool) to hand one row per video to `rrf_fuse_summary`, which
+  keys on `video_id` alone. A hit's text is the chunk that scored, not the
+  whole paragraph — so a fused card can show chunk text from the SigLIP2
+  leg or the full summary from the fuzzy leg, whichever ranked the video
+  first.
 
 ## Signals
 

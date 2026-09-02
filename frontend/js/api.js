@@ -27,6 +27,7 @@ export const searchTrake = (body) => postJson("/api/search/trake", body);
 export const searchHierarchy = (body) => postJson("/api/search/hierarchy", body);
 export const expandHierarchy = (body) => postJson("/api/hierarchy/expand", body);
 export const getFacets = () => jsonFetch("/api/facets");
+export const getProfile = () => jsonFetch("/api/profile");
 
 // before/after are the totals wanted on each side of centerN (base window
 // per tile size + however far the popup has been expanded), not deltas.

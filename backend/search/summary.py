@@ -24,7 +24,16 @@ _meta: pd.DataFrame = None
 def ensure_summary_embeddings():
     """One-time SigLIP2 text-tower embed of every summaries/*.txt, saved to
     SUMMARY_EMBED_DIR so later runs don't re-embed (resumable: skips any
-    video that already has a .npy on disk)."""
+    video that already has a .npy on disk).
+
+    Only for a profile whose summary vectors this app produces itself. A
+    chunked profile's (config.SUMMARY_CHUNKED) come from an upstream
+    pipeline that splits each summary to fit SigLIP2's 64-token text window
+    *before* embedding; embedding a whole summary here would drop a single
+    silently-truncated vector into an index where every other row is a
+    chunk."""
+    if config.SUMMARY_CHUNKED:
+        return False
     for txt_path in sorted(config.SUMMARY_DIR.glob("*.txt")):
         video_id = txt_path.stem
         out_path = config.SUMMARY_EMBED_DIR / f"{video_id}.npy"
@@ -43,20 +52,44 @@ def build_siglip_summary_index():
     ensure_summary_embeddings()
     if not (config.SIGLIP_SUMMARY_FAISS.exists() and config.SIGLIP_SUMMARY_META.exists()):
         npy_paths = sorted(config.SUMMARY_EMBED_DIR.glob("*.npy"))  # was *_summary_siglip768.npy before the rename
-        index = faiss.IndexFlatIP(768)
+        index = faiss.IndexFlatIP(config.EMBED_DIM)
         rows = []
         gid = 0
         for npy_path in npy_paths:
+            if npy_path.name == "summaries_all.npy":
+                # A chunked profile ships one concatenation of every video's
+                # chunks next to the per-video files; indexing it as well
+                # would duplicate the whole corpus.
+                continue
             video_id = video_id_from_filename(str(npy_path), ("_summary_siglip768",))
             txt_path = config.SUMMARY_DIR / f"{video_id}.txt"
             if not txt_path.exists():
                 continue
-            vec = l2_normalize(np.load(npy_path))
-            index.add(vec)
-            rows.append((gid, video_id, txt_path.read_text(encoding="utf-8").strip()))
-            gid += 1
+            vecs = l2_normalize(np.load(npy_path))
+            if vecs.ndim == 1:
+                vecs = vecs.reshape(1, -1)
+            if config.SUMMARY_CHUNKED:
+                # One vector per chunk of the summary, each with its own text
+                # in the sibling {video_id}.csv -- so a hit can show the
+                # sentence that actually scored, not the whole paragraph.
+                chunks_path = config.SUMMARY_EMBED_DIR / f"{video_id}.csv"
+                if not chunks_path.exists():
+                    continue
+                chunks = pd.read_csv(chunks_path)
+                if len(chunks) != vecs.shape[0]:
+                    continue
+                texts = [(int(r["chunk_index"]), r["text"]) for _, r in chunks.iterrows()]
+            else:
+                # One vector for the whole summary, text straight off disk.
+                if vecs.shape[0] != 1:
+                    continue
+                texts = [(0, txt_path.read_text(encoding="utf-8").strip())]
+            index.add(vecs)
+            for chunk_index, text in texts:
+                rows.append((gid, video_id, chunk_index, text))
+                gid += 1
         faiss.write_index(index, str(config.SIGLIP_SUMMARY_FAISS))
-        pd.DataFrame(rows, columns=["global_id", "video_id", "text"]).to_csv(config.SIGLIP_SUMMARY_META, index=False)
+        pd.DataFrame(rows, columns=["global_id", "video_id", "chunk_index", "text"]).to_csv(config.SIGLIP_SUMMARY_META, index=False)
 
     _index = faiss.read_index(str(config.SIGLIP_SUMMARY_FAISS))
     _meta = pd.read_csv(config.SIGLIP_SUMMARY_META)
@@ -71,6 +104,16 @@ def _get_index():
 
 _siglip_cache = TTLCache(maxsize=256, ttl=300)
 
+# A chunked profile holds several rows per video (up to 6, mean 3.2 across
+# the 1152 corpus's 2501 chunks over 785 videos), so a plain top-k FAISS
+# search can spend most of its slots on one video. Overfetch by this factor
+# and keep each video's best-scoring chunk -- a max-pool over chunks -- so
+# the leg still hands exactly one row per video to rrf_fuse_summary, which
+# keys on video_id alone. 4x covers the worst case comfortably.
+_CHUNK_OVERFETCH = 4
+
+_EMPTY_SIGLIP = pd.DataFrame(columns=["rank", "score", "video_id", "text"])
+
 
 def search_siglip_summary(query, k: int = config.FETCH_K) -> pd.DataFrame:
     cache_key = (query_hash(query), k)
@@ -78,15 +121,27 @@ def search_siglip_summary(query, k: int = config.FETCH_K) -> pd.DataFrame:
         return _siglip_cache[cache_key]
     index, meta = _get_index()
     qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
-    n = min(k, index.ntotal)
+    n = min(k * _CHUNK_OVERFETCH if config.SUMMARY_CHUNKED else k, index.ntotal)
     scores, ids = index.search(qvec, n)
     rows = []
-    for rank, (gid, score) in enumerate(zip(ids[0], scores[0]), start=1):
+    for gid, score in zip(ids[0], scores[0]):
         if gid == -1:
             continue
         row = meta.iloc[int(gid)]
-        rows.append({"rank": rank, "score": float(score), "video_id": row["video_id"], "text": row["text"]})
-    result = pd.DataFrame(rows)
+        rows.append({"score": float(score), "video_id": row["video_id"], "text": row["text"]})
+    if not rows:
+        result = _EMPTY_SIGLIP
+    else:
+        # FAISS returns these in descending score order, so a video's first
+        # row is already its best chunk -- keep="first" is the max-pool. On
+        # an unchunked profile there is only ever one row per video, so this
+        # is a no-op and the ranking is bit-for-bit what it always was.
+        result = (pd.DataFrame(rows)
+                  .drop_duplicates("video_id", keep="first")
+                  .head(k)
+                  .reset_index(drop=True))
+        result["rank"] = np.arange(1, len(result) + 1)
+        result = result[["rank", "score", "video_id", "text"]]
     _siglip_cache[cache_key] = result
     return result
 
