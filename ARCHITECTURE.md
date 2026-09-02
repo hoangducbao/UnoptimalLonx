@@ -48,11 +48,11 @@ precomputed `.npy` files, and two FAISS index trees. Picked once from the
 | Summary | `summary_embed/` | `1152embed/1152summary/` |
 | FAISS | `index/routing101_*` | `index/1152/routing101_*` |
 | Resident | ~2.9 GB | ~5.5 GB |
-| Launch | `R101_EMBED=768` → `:8000` | `R101_EMBED=1152` → `:8001` |
+| Launch | `run_768.bat` → `:8000` | `run_1152.bat` → `:8001` |
 
-Separate processes on separate ports (locally, `run_768.bat` /
-`run_1152.bat`, thin wrappers over a shared `_run_common.bat` bootstrap --
-gitignored, so not in a fresh clone), so both can run at once and answer
+Separate processes on separate ports (`run_768.bat` / `run_1152.bat`, thin
+wrappers over the shared `_run_common.bat` bootstrap; non-Windows sets
+`R101_EMBED` directly), so both can run at once and answer
 the same query in two tabs; the header pill (`/api/profile` →
 `frontend/js/app.js`) says which one a tab is talking to, since the two are
 otherwise identical on screen. **Not** a runtime switch: at ~5.5GB for the

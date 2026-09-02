@@ -88,14 +88,10 @@ The app can run against either of two SigLIP2 checkpoints. You pick one
 | RAM (measured) | ~2.8 GB | ~4-5 GB |
 
 Selected with the `R101_EMBED` environment variable (`768` or `1152`,
-default `768`), which `backend/config.py` reads once at import. That env
-var is the whole mechanism and works everywhere.
-
-On the dev machine there are also Windows launcher scripts that set it for
-you (`run_768.bat` / `run_1152.bat`). **They are not in the repo** --
-`.gitignore` excludes `*.bat`, so a fresh clone won't have them. Use the
-`uvicorn` commands in Track A step 4 instead, or ask for the scripts
-directly.
+default `768`), which `backend/config.py` reads once at import. On Windows
+the launcher scripts set it for you -- **`run_768.bat`** and
+**`run_1152.bat`**, both in the repo. On any other platform, set the env
+var yourself; see Track A step 4.
 
 The two profiles are separate processes on separate ports, so you can run
 both at once and compare the same query in two tabs -- the coloured pill next to the
@@ -155,19 +151,28 @@ you get the 768 profile, exactly as before.
    curl http://localhost:9200   # should return a JSON cluster info blob, not a connection error
    ```
 
-4. **Run the app.** The profile is an env var, the port is a flag:
+4. **Run the app.** On Windows, the launcher scripts do steps 3-5 for you
+   -- start Docker if it isn't running, start (or create) the `es`
+   container, wait for it, launch the backend, open your browser:
+   ```
+   run_768.bat      768-dim profile  -> http://localhost:8000/app/
+   run_1152.bat     1152-dim profile -> http://localhost:8001/app/
+   ```
+   Run both if you want them side by side. `stop_routing101.bat 8000` (or
+   `8001`) stops one without touching Elasticsearch, so the next launch
+   stays fast. Both launchers are four-line wrappers over
+   `_run_common.bat`, which holds the shared bootstrap -- edit that one,
+   not the two.
+
+   Leave the launcher window open while you work; it is the live server
+   log. Closing it (or Ctrl+C, then Y) stops the app.
+
+   On any other platform, or to skip the Docker/browser handling, it's the
+   env var plus a port:
    ```
    uvicorn backend.main:app --reload                              # 768, :8000
    R101_EMBED=1152 uvicorn backend.main:app --reload --port 8001  # 1152, :8001
    ```
-   Run both at once if you want them side by side -- separate processes,
-   separate ports, one shared Elasticsearch.
-
-   (On the dev machine, `run_768.bat` / `run_1152.bat` wrap all of steps
-   3-5 -- start Docker, start the `es` container, wait for it, launch the
-   backend, open the browser -- and `stop_routing101.bat <port>` stops one
-   without touching Elasticsearch. Those `.bat` files are gitignored and
-   won't be in your clone; ask if you want them.)
    First boot loads the SigLIP2 model, builds the FAISS indices, and
    bulk-indexes the four ES fuzzy indices (only the first time -- see
    step 3's volume note) -- expect 15-60s depending on disk speed, not
