@@ -20,12 +20,10 @@ except Exception:
 FETCH_K = 100      # candidates pulled per leg, gives RRF a real pool to fuse
 DISPLAY_N = 100
 RRF_K = 60
-NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id
+NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id when the caller names no window of its own (the frontend always does -- it sizes the popup per its tile-size setting, frontend/js/settings.js)
 TOP_G_DEFAULT = 5   # Hierarchy Search: frames kept per video after drill-down (Top-G)
 
 DATASET_MODE = os.getenv("DATASET_MODE", "AIC").upper()  # "AIC" or "ADL"
-
-SIGLIP2_MODEL_ID = os.getenv("SIGLIP2_MODEL_ID", "google/siglip2-base-patch16-384")
 
 if Path("D:/hf_cache").exists():
     os.environ.setdefault("HF_HOME", "D:/hf_cache")
@@ -44,10 +42,45 @@ def _find_dir(names: list, fallback: str) -> Path:
                 dirs[:] = [d for d in dirs if not d.startswith(("L0", "L1", "L2", "v_"))]
     return Path(fallback)
 
-# OD (object-detection) text filter (backend/od_filter.py) -- per-video
-# filtered-detections CSVs produced upstream by AICPreprocess/filter_apply.py
-# (outside this repo) plus the offline class vocabulary built from them by
-# pipeline/build_class_vocab.py.
+# ---------------------------------------------------------------------------
+# Embedding profiles -- which SigLIP2 checkpoint (768 or 1152)
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parent.parent
+_EXTRACTED = Path("D:/University/Summ26/AICDataExtracted")
+
+EMBED_PROFILE = os.getenv("R101_EMBED", "768")
+
+_PROFILES = {
+    "768": dict(
+        dim=768,
+        model_id="google/siglip2-base-patch16-384",
+        frame_glob=str(_EXTRACTED / "siglib_embed" / "*.npy"),
+        asr_dir=_EXTRACTED / "transcript_embed",
+        caption_dir=_EXTRACTED / "caption_embed",
+        summary_embed_dir=_EXTRACTED / "summary_embed",
+        summary_chunked=False,
+        index_sub=".",
+    ),
+    "1152": dict(
+        dim=1152,
+        model_id="google/siglip2-so400m-patch14-384",
+        frame_glob=str(_EXTRACTED / "1152embed" / "1152keyframe" / "*.npy"),
+        asr_dir=_EXTRACTED / "1152embed" / "1152transcript",
+        caption_dir=_EXTRACTED / "1152embed" / "1152caption",
+        summary_embed_dir=_EXTRACTED / "1152embed" / "1152summary",
+        summary_chunked=True,
+        index_sub="1152",
+    ),
+}
+if EMBED_PROFILE not in _PROFILES:
+    raise SystemExit(f"R101_EMBED={EMBED_PROFILE!r} -- expected one of {sorted(_PROFILES)}")
+_P = _PROFILES[EMBED_PROFILE]
+
+EMBED_DIM = _P["dim"]
+SIGLIP2_MODEL_ID = _P["model_id"]
+SUMMARY_CHUNKED = _P["summary_chunked"]
+
+# OD (object-detection) text filter (backend/od_filter.py)
 od_dir = _find_dir(["filtered_object", "filtered_objects", "objects", "object_detection"], "D:/University/Summ26/AICDataExtracted/filtered_object")
 FILTERED_OBJECT_DIR = Path(os.getenv("FILTERED_OBJECT_DIR", str(od_dir)))
 CLASS_VOCAB_CSV = Path(os.getenv("CLASS_VOCAB_CSV", str(FILTERED_OBJECT_DIR / "class_vocab.csv")))
@@ -75,27 +108,32 @@ if DATASET_MODE == "ADL":
 
     INDEX_PREFIX = "adl"
 else:
-    # Default AIC dataset
-    siglip_dir = _find_dir(["siglib_embed", "siglip_embed", "siglip2_embed"], "D:/vids/AICDataExtracted/siglib_embed")
-    if not siglip_dir.exists() and Path("D:/University/Summ26/AICDataExtracted/siglib_embed").exists():
-        siglip_dir = Path("D:/University/Summ26/AICDataExtracted/siglib_embed")
-    FRAME_SIGLIP2_GLOB = os.getenv("FRAME_SIGLIP2_GLOB", str(siglip_dir / "*.npy"))
-
-    ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(["asr_embed", "transcript_embed", "transcripts_embed"], "D:/vids/AICDataExtracted/asr_embed"))))
-    TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", str(_find_dir(["transcripts", "transcript"], "D:/vids/transcripts_l25_results"))))
-
-    CAPTIONING_DIR = Path(os.getenv("CAPTIONING_DIR", str(_find_dir(["captioning", "captions", "caption"], "D:/vids/AICDataExtracted/captioning"))))
-    SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_find_dir(["siglip_caption", "caption_embed", "captions_embed"], "D:/vids/AICDataExtracted/siglip_caption"))))
-
-    OCR_DIR = Path(os.getenv("OCR_DIR", str(_find_dir(["ocr"], "D:/vids/AICDataExtracted/ocr"))))
-
-    SUMMARY_DIR = Path(os.getenv("SUMMARY_DIR", str(_find_dir(["summaries", "summary"], "D:/vids/AICDataExtracted/summaries"))))
-    SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_find_dir(["summary_embed", "summaries_embed"], "/kaggle/working/summary_embed" if IS_KAGGLE else "D:/vids/AICDataExtracted/summary_embed"))))
-
-    MAP_KEYFRAMES_DIR = Path(os.getenv("MAP_KEYFRAMES_DIR", str(_find_dir(["map-keyframes", "map_keyframes"], "D:/vids/map-keyframes/map-keyframes"))))
-
-    THUMBNAIL_ROOT = Path(os.getenv("THUMBNAIL_ROOT", str(_find_dir(["keyframes"], "D:/University/Summ26/AICData/keyframes"))))
-    VIDEO_DIR = Path(os.getenv("VIDEO_DIR", str(_find_dir(["degarr", "videos", "video", "videos_l21", "videos_l22", "videos_l23", "videos_l24", "videos_l25"], "D:/University/Summ26/AICData/video"))))
+    # Default AIC dataset with dynamic fallback
+    if IS_KAGGLE:
+        siglip_dir = _find_dir(["siglib_embed", "siglip_embed", "siglip2_embed", "1152keyframe"], str(_P["frame_glob"]))
+        FRAME_SIGLIP2_GLOB = os.getenv("FRAME_SIGLIP2_GLOB", str(siglip_dir / "*.npy"))
+        ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(["transcript_embed", "transcripts_embed", "1152transcript", "asr_embed"], str(_P["asr_dir"])))))
+        TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", str(_find_dir(["transcripts", "transcript"], "D:/University/Summ26/AICDataExtracted/transcripts"))))
+        CAPTIONING_DIR = Path(os.getenv("CAPTIONING_DIR", str(_find_dir(["captions", "caption", "captioning"], "D:/University/Summ26/AICDataExtracted/captions"))))
+        SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_find_dir(["caption_embed", "captions_embed", "1152caption", "siglip_caption"], str(_P["caption_dir"])))))
+        OCR_DIR = Path(os.getenv("OCR_DIR", str(_find_dir(["ocr"], "D:/University/Summ26/AICDataExtracted/ocr"))))
+        SUMMARY_DIR = Path(os.getenv("SUMMARY_DIR", str(_find_dir(["summaries", "summary"], "D:/University/Summ26/AICDataExtracted/summaries"))))
+        SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_find_dir(["summary_embed", "summaries_embed", "1152summary"], "/kaggle/working/summary_embed"))))
+        MAP_KEYFRAMES_DIR = Path(os.getenv("MAP_KEYFRAMES_DIR", str(_find_dir(["map-keyframes", "map_keyframes"], "D:/University/Summ26/AICData/map-keyframes"))))
+        THUMBNAIL_ROOT = Path(os.getenv("THUMBNAIL_ROOT", str(_find_dir(["keyframes"], "D:/University/Summ26/AICData/keyframes"))))
+        VIDEO_DIR = Path(os.getenv("VIDEO_DIR", str(_find_dir(["degarr", "videos", "video"], "D:/University/Summ26/AICData/video"))))
+    else:
+        FRAME_SIGLIP2_GLOB = os.getenv("FRAME_SIGLIP2_GLOB", _P["frame_glob"])
+        ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_P["asr_dir"])))
+        TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", str(_EXTRACTED / "transcripts")))
+        CAPTIONING_DIR = Path(os.getenv("CAPTIONING_DIR", str(_EXTRACTED / "captions")))
+        SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_P["caption_dir"])))
+        OCR_DIR = Path(os.getenv("OCR_DIR", str(_EXTRACTED / "ocr")))
+        SUMMARY_DIR = Path(os.getenv("SUMMARY_DIR", str(_EXTRACTED / "summaries")))
+        SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_P["summary_embed_dir"])))
+        MAP_KEYFRAMES_DIR = Path(os.getenv("MAP_KEYFRAMES_DIR", "D:/University/Summ26/AICData/map-keyframes"))
+        THUMBNAIL_ROOT = Path(os.getenv("THUMBNAIL_ROOT", "D:/University/Summ26/AICData/keyframes"))
+        VIDEO_DIR = Path(os.getenv("VIDEO_DIR", "D:/University/Summ26/AICData/video"))
 
     INDEX_PREFIX = "routing101"
 
@@ -104,8 +142,7 @@ try:
 except Exception:
     pass
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-INDEX_DIR = Path(os.getenv("INDEX_DIR", str(REPO_ROOT / "index")))
+INDEX_DIR = Path(os.getenv("INDEX_DIR", str(REPO_ROOT / "index" / _P["index_sub"])))
 PIPELINE_DIR = REPO_ROOT / "pipeline"  # rule/LLM-extracted per-lot metadata CSVs (backend/metadata_filter.py)
 ASR_INDEX_DIR = INDEX_DIR / f"{INDEX_PREFIX}_asr"
 CAPTION_INDEX_DIR = INDEX_DIR / f"{INDEX_PREFIX}_caption"

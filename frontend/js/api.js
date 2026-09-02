@@ -27,7 +27,10 @@ export const searchTrake = (body) => postJson("/api/search/trake", body);
 export const searchHierarchy = (body) => postJson("/api/search/hierarchy", body);
 export const expandHierarchy = (body) => postJson("/api/hierarchy/expand", body);
 export const getFacets = () => jsonFetch("/api/facets");
+export const getProfile = () => jsonFetch("/api/profile");
 
+// before/after are the totals wanted on each side of centerN (base window
+// per tile size + however far the popup has been expanded), not deltas.
 export function getNeighbors(videoId, centerN, before, after) {
     const qs = new URLSearchParams({ video_id: videoId, center_n: centerN, before, after });
     return jsonFetch(`/api/neighbors?${qs}`);
@@ -51,6 +54,25 @@ export function getExportFrame(videoId, n) {
 export function getExportNeighbors(videoId, n, count) {
     const qs = new URLSearchParams({ video_id: videoId, n, count });
     return jsonFetch(`/api/export/neighbors?${qs}`);
+}
+
+// Confirmed mode's "Similars" preview -- a fresh visual search seeded by
+// the confirmed frame itself (see backend/export.py's
+// similar_candidates_for_frame), not the opener tab's original query
+// results. Same {video_id, n, results} shape as getExportNeighbors above.
+export function getExportSimilar(videoId, n, count) {
+    const qs = new URLSearchParams({ video_id: videoId, n, count });
+    return jsonFetch(`/api/export/similar?${qs}`);
+}
+
+// Export tab's "Keyframes" checkbox, re-checked while a raw native frame
+// (Keyframes unchecked) is curated -- snaps that frame_idx to its nearest
+// indexed keyframe so keyframe-mode UI has an n again (see
+// backend/export.py::similar_candidates_for_native_frame's docstring for
+// the same snap-to-nearest idea, used server-side for the CSV itself).
+export function getExportNearestKeyframe(videoId, frameIdx) {
+    const qs = new URLSearchParams({ video_id: videoId, frame_idx: frameIdx });
+    return jsonFetch(`/api/export/nearest-keyframe?${qs}`);
 }
 
 export async function uploadQueryImage(blob) {

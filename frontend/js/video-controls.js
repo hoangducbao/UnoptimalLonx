@@ -66,6 +66,26 @@ export function applyVideoPrefs(video) {
 // it doesn't fight typing elsewhere in the same dialog (e.g. the TRAKE
 // curation panel's own text inputs). `speedLabel`, if given, is kept in
 // sync with a live "1.25x" readout.
+// Grabs a JPEG data URL of whatever frame `video` is showing right now --
+// used anywhere a raw native frame needs a thumbnail but has no existing
+// thumbnail file to point at the way a keyframe does (a TRAKE curation
+// event, or a playback dialog's "Export this frame" handoff). The video
+// element is expected to be same-origin (served from this app's own
+// /media/video mount), so the canvas isn't tainted; still guarded in case
+// a frame isn't decoded yet.
+export function captureVideoThumbnail(video) {
+    try {
+        const w = video.videoWidth || 320, h = video.videoHeight || 180;
+        const canvas = document.createElement("canvas");
+        canvas.width = 160;
+        canvas.height = Math.round(160 * (h / w));
+        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.7);
+    } catch (e) {
+        return null;
+    }
+}
+
 export function bindSpeedShortcut(video, target, speedLabel) {
     function renderLabel() {
         if (speedLabel) speedLabel.textContent = `${video.playbackRate.toFixed(2).replace(/\.?0+$/, "")}x`;

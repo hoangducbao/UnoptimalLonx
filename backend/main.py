@@ -33,19 +33,37 @@ async def lifespan(app: FastAPI):
     # block (ui/app.py:1579-1595).
     config.tune_thread_pools(DEVICE)
     print(f"[startup] device={DEVICE} cpu_budget={config.CPU_BUDGET}")
+    # Which embedding profile this process is (backend/config.py). Printed
+    # first and loudly: two profiles can run side by side on two ports, and
+    # nothing downstream of here says which one you're looking at.
+    print(f"[startup] profile={config.EMBED_PROFILE} dim={config.EMBED_DIM} "
+          f"model={config.SIGLIP2_MODEL_ID}")
+    print(f"[startup] indices={config.INDEX_DIR}")
 
     print("[startup] loading SigLIP2 text/image tower…")
     load_siglip2()
 
+    # Vector counts per index -- a profile whose upstream embedding job only
+    # partly finished still starts and searches fine, just over fewer videos,
+    # which is otherwise invisible until rankings look off for no reason.
     print("[startup] Keyframe — SigLIP2 frame index")
-    kf.build_frame_index(config.FRAME_SIGLIP2_GLOB)
+    frame_index, frame_lookup = kf.build_frame_index(config.FRAME_SIGLIP2_GLOB)
+    print(f"[startup]   {frame_index.ntotal} frames over "
+          f"{frame_lookup['video_id'].nunique()} videos")
 
     print("[startup] ASR — SigLIP2 index")
-    asr_mod.build_siglip_asr_index()
+    asr_index, asr_meta = asr_mod.build_siglip_asr_index()
+    print(f"[startup]   {asr_index.ntotal} segments over "
+          f"{asr_meta['video_id'].nunique()} videos")
     print("[startup] Caption — SigLIP2 index")
-    cap_mod.build_siglip_caption_index()
+    cap_index, cap_meta = cap_mod.build_siglip_caption_index()
+    print(f"[startup]   {cap_index.ntotal} captions over "
+          f"{cap_meta['video_id'].nunique()} videos")
     print("[startup] Summary — embeddings + SigLIP2 index")
-    sum_mod.build_siglip_summary_index()
+    sum_index, sum_meta = sum_mod.build_siglip_summary_index()
+    print(f"[startup]   {sum_index.ntotal} "
+          f"{'chunks' if config.SUMMARY_CHUNKED else 'summaries'} over "
+          f"{sum_meta['video_id'].nunique()} videos")
 
     try:
         print("[startup] ASR/Caption/OCR/Summary — Elasticsearch")
@@ -104,6 +122,14 @@ app.mount("/media/video", StaticFiles(directory=config.VIDEO_DIR), name="video")
 # Frontend: static HTML/CSS/JS, served under /app so it doesn't collide
 # with /api and /media routes above.
 app.mount("/app", NoCacheStaticFiles(directory=config.REPO_ROOT / "frontend", html=True), name="frontend")
+
+
+@app.get("/api/profile")
+def profile():
+    """Which embedding profile this process loaded -- the frontend badges it
+    so two tabs on two ports can't be mistaken for each other."""
+    return {"profile": config.EMBED_PROFILE, "dim": config.EMBED_DIM,
+            "model_id": config.SIGLIP2_MODEL_ID}
 
 
 @app.get("/")

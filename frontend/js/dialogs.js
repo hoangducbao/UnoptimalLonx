@@ -16,7 +16,12 @@ import {
     getNeighborExtra, MIXED_DEFAULT_LEGS, MIXED_DEFAULT_WEIGHTS,
     MIXED_LEG_DEFS, MIXED_SIGNAL_NAMES, mixedConfig, saveMixedConfig,
 } from "./state.js";
-import { applyVideoPrefs, bindSpeedShortcut } from "./video-controls.js";
+import {
+    groupByUi, HOVER_ZOOM_MAX, HOVER_ZOOM_MIN, HOVER_ZOOM_STEP,
+    SETTINGS_DEFAULTS, saveSettings, settings, tile, TILE_SIZE_KEYS,
+    TILE_SIZES, TOP_K_DEFAULT, TOP_V_DEFAULT,
+} from "./settings.js";
+import { applyVideoPrefs, bindSpeedShortcut, captureVideoThumbnail } from "./video-controls.js";
 
 const root = document.getElementById("dialog-root");
 
@@ -49,16 +54,22 @@ export function openDialog(title, bodyEl, { wide = false } = {}) {
 }
 
 export async function openNeighborsDialog(videoId, centerN) {
+    // Columns, opening window and expand step all follow the tile-size
+    // setting (settings.js's TILE_SIZES): the popup's grid is as wide in
+    // tiles as the main result grid, and the counts are picked so it opens
+    // three rows full (before + center + after) and expands by two.
+    const { neighborsBefore, neighborsAfter, neighborStep: step } = tile();
     const body = document.createElement("div");
     body.innerHTML = `<div class="thumb-caption" style="margin-bottom:0.5rem;">${videoId} — around frame ${centerN}</div>
-        <button class="btn" id="nbr-up" style="width:100%;margin-bottom:0.5rem;">▲ 10 earlier</button>
-        <div class="grid nbr-grid" id="nbr-grid" style="grid-template-columns:repeat(5,1fr);"></div>
-        <button class="btn" id="nbr-down" style="width:100%;margin-top:0.5rem;">▼ 10 later</button>`;
+        <button class="btn" id="nbr-up" style="width:100%;margin-bottom:0.5rem;">▲ ${step} earlier</button>
+        <div class="grid nbr-grid" id="nbr-grid"></div>
+        <button class="btn" id="nbr-down" style="width:100%;margin-top:0.5rem;">▼ ${step} later</button>`;
     const { box } = openDialog("Nearby frames", body, { wide: true });
 
     async function refresh() {
         const extra = getNeighborExtra(videoId, centerN);
-        const data = await getNeighbors(videoId, centerN, extra.before, extra.after);
+        const data = await getNeighbors(
+            videoId, centerN, neighborsBefore + extra.before, neighborsAfter + extra.after);
         const grid = box.querySelector("#nbr-grid");
         grid.innerHTML = "";
         for (const f of data.frames) {
@@ -91,11 +102,11 @@ export async function openNeighborsDialog(videoId, centerN) {
     }
 
     box.querySelector("#nbr-up").onclick = () => {
-        getNeighborExtra(videoId, centerN).before += 10;
+        getNeighborExtra(videoId, centerN).before += step;
         refresh();
     };
     box.querySelector("#nbr-down").onclick = () => {
-        getNeighborExtra(videoId, centerN).after += 10;
+        getNeighborExtra(videoId, centerN).after += step;
         refresh();
     };
 
@@ -162,9 +173,19 @@ export async function openPlaybackDialog(videoId, n) {
         // not), computed fresh at click time -- not read off the timer's
         // text, which is just a display of the same arithmetic. No
         // keyframe n involved at all, so this always opens as a TRAKE
-        // export (see export-ui.js's {kind:"frame"} handling).
+        // export (see export-ui.js's {kind:"frame"} handling). Carries the
+        // current playback position (seconds) and a thumbnail snapshot
+        // across the tab handoff too: the Export tab's curation video
+        // seeks to the same spot instead of restarting at 0:00, and the
+        // seeded TRAKE event gets a real preview instead of "no preview"
+        // (see export-ui.js's addTrakeEventFromTrigger/loadCurationVideo).
         box.querySelector("#playback-export-btn").onclick = () => {
-            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+            openExportDialog({
+                kind: "frame", video_id: videoId,
+                frame_idx: Math.round(video.currentTime * data.fps),
+                current_time: video.currentTime,
+                thumbnail: captureVideoThumbnail(video),
+            });
         };
     } catch (e) {
         box.querySelector("#playback-video-wrap").innerHTML =
@@ -247,6 +268,148 @@ export function openWeightsDialog(onSave) {
         mixedConfig.weights = staged.weights;
         mixedConfig.legs = staged.legs;
         saveMixedConfig();
+        overlay.remove();
+        if (onSave) onSave();
+    };
+}
+
+// Display settings dialog -- the ⚙ button in the sidebar's signal rows.
+// Same staged-copy/Defaults/Cancel/Save shape as openWeightsDialog above:
+// nothing is committed (or persisted) until Save, so Cancel really does
+// discard. `onSave` re-runs the current search -- every control here can
+// change what a search returns or how it's grouped.
+//
+// Two kinds of control share the form: the saved settings themselves
+// (settings.js), and mirrors of the sidebar's Top-K/Top-V/Top-G boxes, which
+// stay on the sidebar and stay session state -- the dialog reads them on
+// open and writes back only the ones actually changed, so it never clobbers
+// a hand-typed value it didn't touch.
+export function openSettingsDialog(onSave) {
+    const staged = { ...settings };
+
+    const TOP_BOXES = [
+        { id: "top-k", label: "Top-K", title: "Candidates fetched per search." },
+        { id: "top-v", label: "Top-V", title: "Videos kept (TRAKE)." },
+        { id: "top-g", label: "Top-G", title: "Frames kept per video after per-video drill-down (Hierarchy)." },
+    ];
+    const sidebarInput = (id) => document.getElementById(id);
+    // All three are always offered here, even though the sidebar shows Top-V
+    // only on TRAKE and Top-G only on Hierarchy: the inputs (and their
+    // values) exist either way, so this is the one place to set them up
+    // before switching to the signal that uses them.
+    const initialTops = Object.fromEntries(TOP_BOXES.map((b) => [b.id, sidebarInput(b.id).value]));
+    const stagedTops = { ...initialTops };
+    // A hand-typed Top-G outranks the tile size's default below.
+    let topGTouched = false;
+
+    const body = document.createElement("div");
+    body.innerHTML = `<div class="settings-row">
+          <label for="set-zoom" title="How far a result thumbnail scales up while hovered.">Hover zoom</label>
+          <input type="range" id="set-zoom" min="${HOVER_ZOOM_MIN}" max="${HOVER_ZOOM_MAX}" step="${HOVER_ZOOM_STEP}">
+          <span class="settings-value" id="set-zoom-value"></span>
+        </div>
+        <div class="settings-row">
+          <label title="Thumbnail size everywhere: fewer, bigger tiles per row (and matching &quot;show more&quot; steps) at Large.">Tiles display size</label>
+          <div class="segmented" id="set-tile">
+            ${TILE_SIZE_KEYS.map((key) => `<button type="button" data-tile="${key}">${TILE_SIZES[key].label}</button>`).join("")}
+          </div>
+        </div>
+        <div class="settings-row">
+          <label title="The same boxes as the sidebar's -- changed here, they change there.">Result counts</label>
+          <div class="settings-tops">
+            ${TOP_BOXES.map((b) => `<div class="settings-top-box">
+              <label for="set-${b.id}" title="${b.title}">${b.label}</label>
+              <input type="number" id="set-${b.id}" min="1" step="1">
+            </div>`).join("")}
+          </div>
+        </div>
+        <div class="settings-row">
+          <label>Result display</label>
+          <div class="settings-checks">
+            <label class="settings-check" id="set-group-row">
+              <input type="checkbox" id="set-group"> <span id="set-group-label"></span>
+            </label>
+            <label class="settings-check">
+              <input type="checkbox" id="set-fulltext"> Show full text
+            </label>
+          </div>
+        </div>
+        <hr class="divider">
+        <div class="settings-actions">
+          <button class="btn" id="set-defaults">Set to defaults</button>
+          <button class="btn" id="set-cancel">Cancel</button>
+          <button class="btn btn-primary" id="set-save">Save</button>
+        </div>`;
+    const { overlay, box } = openDialog("Settings", body);
+
+    const zoom = box.querySelector("#set-zoom");
+    const zoomValue = box.querySelector("#set-zoom-value");
+    const groupCheck = box.querySelector("#set-group");
+    const fullTextCheck = box.querySelector("#set-fulltext");
+
+    // Hierarchy/TRAKE don't offer a group-by toggle at all, and Summary
+    // relabels it -- one shared toggle, presented per the mounted signal
+    // (settings.js's groupByUi).
+    box.querySelector("#set-group-row").style.display = groupByUi.visible ? "flex" : "none";
+    box.querySelector("#set-group-label").textContent = groupByUi.label;
+
+    function renderStaged() {
+        zoom.value = staged.hoverZoom;
+        zoomValue.textContent = `${Number(staged.hoverZoom).toFixed(1)}×`;
+        // Exactly one tile size active at a time -- clicking one clears its
+        // siblings (unlike the sidebar's scope segmented control, this one
+        // can't drop to zero selected).
+        box.querySelectorAll("#set-tile button").forEach((btn) => {
+            btn.classList.toggle("active", btn.dataset.tile === staged.tileSize);
+        });
+        groupCheck.checked = staged.groupByVideo;
+        fullTextCheck.checked = staged.showFullText;
+        for (const b of TOP_BOXES) box.querySelector(`#set-${b.id}`).value = stagedTops[b.id];
+    }
+    renderStaged();
+
+    zoom.oninput = () => {
+        staged.hoverZoom = Math.round(parseFloat(zoom.value) * 10) / 10;
+        zoomValue.textContent = `${staged.hoverZoom.toFixed(1)}×`;
+    };
+    box.querySelectorAll("#set-tile button").forEach((btn) => {
+        btn.onclick = () => {
+            staged.tileSize = btn.dataset.tile;
+            // Top-G's default is a property of the tile size, so picking a
+            // size moves the box with it -- unless the user typed their own.
+            if (!topGTouched) stagedTops["top-g"] = String(TILE_SIZES[staged.tileSize].topG);
+            renderStaged();
+        };
+    });
+    for (const b of TOP_BOXES) {
+        box.querySelector(`#set-${b.id}`).oninput = (e) => {
+            stagedTops[b.id] = e.target.value;
+            if (b.id === "top-g") topGTouched = true;
+        };
+    }
+    groupCheck.onchange = () => { staged.groupByVideo = groupCheck.checked; };
+    fullTextCheck.onchange = () => { staged.showFullText = fullTextCheck.checked; };
+
+    box.querySelector("#set-defaults").onclick = () => {
+        Object.assign(staged, SETTINGS_DEFAULTS);
+        const topDefaults = {
+            "top-k": TOP_K_DEFAULT,
+            "top-v": TOP_V_DEFAULT,
+            "top-g": TILE_SIZES[staged.tileSize].topG,
+        };
+        for (const b of TOP_BOXES) stagedTops[b.id] = String(topDefaults[b.id]);
+        topGTouched = false;
+        renderStaged();
+    };
+    box.querySelector("#set-cancel").onclick = () => overlay.remove();
+    box.querySelector("#set-save").onclick = () => {
+        saveSettings(staged);
+        // Only the boxes actually changed are written back -- including
+        // Top-G when a new tile size moved it (see the size buttons above),
+        // whether or not the current signal shows Top-G in the sidebar.
+        for (const b of TOP_BOXES) {
+            if (stagedTops[b.id] !== initialTops[b.id]) sidebarInput(b.id).value = stagedTops[b.id];
+        }
         overlay.remove();
         if (onSave) onSave();
     };
@@ -337,9 +500,15 @@ export async function openTrakePlaybackDialog(videoId, events) {
         });
 
         // Same "capture the real frame fresh at click time" pattern as
-        // openPlaybackDialog's own export button.
+        // openPlaybackDialog's own export button, including the current-
+        // time/thumbnail handoff (see its comment above).
         box.querySelector("#trake-export-btn").onclick = () => {
-            openExportDialog({ kind: "frame", video_id: videoId, frame_idx: Math.round(video.currentTime * data.fps) });
+            openExportDialog({
+                kind: "frame", video_id: videoId,
+                frame_idx: Math.round(video.currentTime * data.fps),
+                current_time: video.currentTime,
+                thumbnail: captureVideoThumbnail(video),
+            });
         };
     } catch (e) {
         box.querySelector("#trake-video-wrap").innerHTML = `<div class="status-banner error">${e.message}</div>`;

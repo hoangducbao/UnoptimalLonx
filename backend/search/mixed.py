@@ -47,6 +47,8 @@ def _mixed_keyframe_df(query, fetch_k, video_filter, lot_filter) -> pd.DataFrame
 
 
 def _mixed_asr_df(query, fetch_k, video_filter, lot_filter, legs) -> pd.DataFrame:
+    # Same deliberate omission as trake.py's ASR branch: no `exact` leg here,
+    # so Mixed's own ASR leg toggles stay the two they have always been.
     named = {}
     if legs.get("asr_siglip"):
         named["siglip_asr"] = apply_filters(asr_mod.search_siglip_asr(query, k=fetch_k), video_filter, lot_filter)

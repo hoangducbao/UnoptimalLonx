@@ -26,7 +26,7 @@ def build_siglip_caption_index():
         # caption_embed/{video_id}.npy + {video_id}.csv (was siglip_caption/
         # {video_id}_caption_siglip768.npy + _frames.csv before the rename).
         npy_paths = sorted(config.SIGLIP_CAPTION_DIR.glob("*.npy"))
-        index = faiss.IndexFlatIP(768)
+        index = faiss.IndexFlatIP(config.EMBED_DIM)
         rows = []
         gid = 0
         for npy_path in npy_paths:

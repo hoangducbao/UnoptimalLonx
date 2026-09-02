@@ -29,14 +29,69 @@ pipeline/
   build_class_vocab.py  builds the OD class vocabulary od_filter.py matches against
   *.csv                 per-lot metadata extracted upstream (metadata_filter.py's source)
 index/                  generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
+                        (768 profile at index/routing101_*, 1152 at index/1152/routing101_* -- see Embedding profiles)
 ```
+
+## Embedding profiles
+
+Two SigLIP2 checkpoints, and therefore two vector dimensions, two sets of
+precomputed `.npy` files, and two FAISS index trees. Picked once from the
+`R101_EMBED` environment variable at process start (`backend/config.py`'s
+`_PROFILES`), never from inside the app:
+
+| | `768` (default) | `1152` |
+|---|---|---|
+| Checkpoint | `siglip2-base-patch16-384` | `siglip2-so400m-patch14-384` |
+| Frames | `siglib_embed/` | `1152embed/1152keyframe/` |
+| ASR | `transcript_embed/` | `1152embed/1152transcript/` |
+| Caption | `caption_embed/` | `1152embed/1152caption/` |
+| Summary | `summary_embed/` | `1152embed/1152summary/` |
+| FAISS | `index/routing101_*` | `index/1152/routing101_*` |
+| Resident | ~2.9 GB | ~5.5 GB |
+| Launch | `run_768.bat` → `:8000` | `run_1152.bat` → `:8001` |
+
+Separate processes on separate ports (`run_768.bat` / `run_1152.bat`, thin
+wrappers over the shared `_run_common.bat` bootstrap; non-Windows sets
+`R101_EMBED` directly), so both can run at once and answer
+the same query in two tabs; the header pill (`/api/profile` →
+`frontend/js/app.js`) says which one a tab is talking to, since the two are
+otherwise identical on screen. **Not** a runtime switch: at ~5.5GB for the
+1152 profile alone, holding both in one process would roughly double a
+footprint this system has already trimmed once on purpose (see the Keyframe
+row in Signals below, on the removed M-CLIP text tower).
+
+Everything that isn't an embedding is shared and never duplicated per
+dimension: the four Elasticsearch indices (verified: the 1152 transcript
+segment ids match `transcripts/*.csv` exactly, so both profiles' embedding
+legs key on the same `segment_id` space the fuzzy legs do), `map-keyframes`,
+thumbnails, video, the OD vocabulary, the metadata facets, and the whole
+export flow.
+
+Two profile-shaped differences in the data itself, both handled in the
+search modules rather than by reshaping the files:
+
+- **ASR** — the 1152 transcript CSVs are segment-only, with no `frame_id`
+  column. `build_siglip_asr_index()` falls back to
+  `nearest_keyframe_n_by_time()`, the same resolution the ES fuzzy leg has
+  always used, applied once at build time.
+- **Summary** — the 1152 summaries are embedded chunk-by-chunk
+  (`chunks_separate`: 2501 chunks over 785 videos) rather than one vector
+  per summary, because SigLIP2's text tower only sees 64 tokens and a
+  summary runs well past that — the 768 profile silently truncated most of
+  every summary it embedded. So the index holds one row per chunk, and
+  `search_siglip_summary()` overfetches and keeps each video's best-scoring
+  chunk (a max-pool) to hand one row per video to `rrf_fuse_summary`, which
+  keys on `video_id` alone. A hit's text is the chunk that scored, not the
+  whole paragraph — so a fused card can show chunk text from the SigLIP2
+  leg or the full summary from the fuzzy leg, whichever ranked the video
+  first.
 
 ## Signals
 
 | Signal | Legs | Notes |
 |---|---|---|
 | Keyframe | SigLIP2 only | frame embeddings; CLIP ViT-B/32 + its Multilingual-CLIP query-time text encoder (XLM-RoBERTa-large) were removed entirely -- that text tower alone cost ~4.6GB RAM lazily loaded, dwarfing every other model/index in this system combined |
-| ASR | SigLIP2-ASR, Elasticsearch fuzzy, RRF | transcript segments mapped to nearest keyframe |
+| ASR | SigLIP2-ASR, Elasticsearch fuzzy, Elasticsearch exact (match_phrase), RRF | transcript segments mapped to nearest keyframe; exact is ASR-only and diacritic-sensitive |
 | Caption | SigLIP2-caption, Elasticsearch fuzzy, RRF | one row per keyframe |
 | OCR | Elasticsearch fuzzy only | single leg by design, no embedding leg, no RRF |
 | Summary | SigLIP2-summary, Elasticsearch fuzzy, RRF | video-level: one result per video |
@@ -77,12 +132,39 @@ duplicate of an already-placed row never helps, only wastes a slot).
 - **KIS/VQA** (`backend/export.py::_generate_export_flat`) — confirmed
   mode (a picked answer + its nearest keyframes by time as hedges) or
   unconfirmed mode (a curated ordered list of answer candidates), then a
-  similar-semantic tier (the query's own ranked results) and a filler
-  tier (nearest-by-time keyframes of each similar), until the row budget
-  is spent. The VQA answer text box is a plain typed field in both modes
-  — no LLM auto-fill, that was a planned later phase that isn't
-  happening; whatever's typed goes straight into the CSV's quoted answer
-  column.
+  similar-semantic tier (confirmed mode: a fresh visual search seeded by
+  the confirmed frame itself, `similar_candidates_for_frame`; unconfirmed
+  mode: the opener tab's own ranked results) and a filler tier
+  (nearest-by-time keyframes of each similar), until the row budget is
+  spent. The VQA answer text box is a plain typed field in both modes —
+  no LLM auto-fill, that was a planned later phase that isn't happening;
+  whatever's typed goes straight into the CSV's quoted answer column.
+
+  A **"Keyframes" checkbox** (next to "Confirmed") switches the answer
+  between an indexed keyframe (`{video_id, n}`, the above) and a raw
+  **native** frame (`{video_id, frame_idx}`) straight from video
+  playback, unchecked. Unchecked, the Neighbours/Similars preview grids
+  are replaced by a TRAKE-style curation panel — an inline `<video>` plus
+  an add button that captures whatever frame is currently playing;
+  confirmed mode caps it at one frame ("Switch to this frame" swaps it,
+  captioned by video_id), unconfirmed mode is a plain list of candidates
+  in the order added ("Cand 1", "Cand 2", ..., no temporal sort, unlike
+  TRAKE's events) — no Generate-rows/cache/merge step either way, the
+  curated list(s) go straight into `/api/export`. The Video ID/Frame ID/
+  Change row is dropped entirely in this mode (the curation panel's own
+  video is the only way to add a frame); VQA reuses that vacated topbar
+  slot for its answer text box instead, KIS just leaves it empty. Row
+  generation still runs the same tiers server-side with nothing to
+  preview: the confirmed/answers tier is built in frame_idx space via
+  TRAKE's own `_event_neighbour_stream` neighbour logic
+  (`generate_export(..., keyframes=False)`) instead of
+  `nearest_keyframes_by_time`, and confirmed mode's similar-semantic
+  search snaps to the nearest indexed keyframe first
+  (`similar_candidates_for_native_frame`), since a raw frame has no
+  SigLIP2 embedding of its own to search from. A frame captured live from
+  a video-playback dialog (no keyframe `n` at all) opens KIS/VQA with
+  Keyframes unchecked by default; re-checking it snaps whatever's curated
+  to its nearest keyframe (`/api/export/nearest-keyframe`).
 - **TRAKE** — no confirmed/unconfirmed distinction at all. A
   **curate → cache → merge** flow instead, entirely inside the Export
   tab's TRAKE panel:
@@ -118,7 +200,11 @@ duplicate of an already-placed row never helps, only wastes a slot).
 
   Not limited to an actual TRAKE search: any signal's result card, a
   Neighbours/Similars preview pick (KIS/VQA), or a frame captured live
-  from a video-playback dialog can seed a curation session's first event.
+  from a video-playback dialog can seed a curation session's first event
+  — and a video-playback frame is no longer TRAKE-only either: it opens
+  with all three query types available (KIS/VQA default to Keyframes
+  unchecked, per above), seeding both the TRAKE and native KIS/VQA
+  curation panels with the same frame up front.
 
 ## Frontend caching
 

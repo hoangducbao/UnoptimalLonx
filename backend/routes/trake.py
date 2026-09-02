@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from .. import config
 from ..common import parse_lot_range, thumbnail_url
+from ..models import siglip2_truncation_warning
 from ..search import trake as trake_mod
 
 router = APIRouter()
@@ -50,6 +51,7 @@ class TrakeSearchRequest(BaseModel):
 
 class TrakeSearchResponse(BaseModel):
     message: Optional[str] = None
+    warning: Optional[str] = None
     candidates: list = []
 
 
@@ -63,6 +65,23 @@ def search_trake(body: TrakeSearchRequest):
     lot_filter = parse_lot_range(body.lot_filter, body.exclude_lot)
     ctx_text = (body.context.text.strip() if body.context else "")
     ctx_signal = body.context.signal if body.context else "Summary"
+
+    # OCR-signal events have no SigLIP2 leg at all (search/ocr.py is
+    # fuzzy-only), so they're exempt -- every other signal option here
+    # (Keyframe/ASR/Caption/Mixed, plus the context row's fixed Summary)
+    # always runs a SigLIP2 leg internally, via trake_search_event().
+    truncated_labels = []
+    if ctx_text and siglip2_truncation_warning(ctx_text):
+        truncated_labels.append("context")
+    for i, ev in enumerate(body.events):
+        if ev.signal != "OCR" and ev.text.strip() and siglip2_truncation_warning(ev.text):
+            truncated_labels.append(f"event {i + 1}")
+    trunc_warning = None
+    if truncated_labels:
+        trunc_warning = (
+            f"{', '.join(truncated_labels)} too long for SigLIP2's embedding legs -- "
+            f"only the first ~64 tokens of each were used (fuzzy legs unaffected)."
+        )
 
     def run_event(text, signal):
         return trake_mod.trake_search_event(
@@ -100,4 +119,4 @@ def search_trake(body: TrakeSearchRequest):
     if not candidates:
         message = ("No video matches every event in the required order. Try broader event text, "
                    "fewer events, or a different signal per event.")
-    return TrakeSearchResponse(message=message, candidates=candidates)
+    return TrakeSearchResponse(message=message, warning=trunc_warning, candidates=candidates)
