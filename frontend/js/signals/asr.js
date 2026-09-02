@@ -5,8 +5,9 @@
 
 import { searchAsr } from "../api.js";
 import { makeTextSignalPanel } from "./_text_signal.js";
+import { settings } from "../settings.js";
 
-const groupMode = () => document.getElementById("group-by-video").checked ? "video" : null;
+const groupMode = () => settings.groupByVideo ? "video" : null;
 
 export const { mount, run } = makeTextSignalPanel({
     prefix: "asr",

@@ -5,13 +5,14 @@ import { searchOcr } from "../api.js";
 import { renderGrid } from "../render.js";
 import { currentQuery } from "../query-input.js";
 import { resetExportCandidates, scopeFilters } from "../state.js";
+import { settings } from "../settings.js";
 
 export function mount(controlsEl) {
     controlsEl.innerHTML = `<div class="thumb-caption muted">Single leg: fuzzy text search only, no embedding leg.</div>`;
 }
 
 function groupMode() {
-    return document.getElementById("group-by-video").checked ? "video" : null;
+    return settings.groupByVideo ? "video" : null;
 }
 
 export async function run(resultsEl, statusEl) {

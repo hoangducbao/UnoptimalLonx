@@ -8,6 +8,7 @@
 import { openNeighborsDialog, openPlaybackDialog } from "./dialogs.js";
 import { openExportDialog } from "./export-dialog.js";
 import { copyCollectionOnly, copyToScope } from "./state.js";
+import { settings } from "./settings.js";
 
 function videoLotStr(videoId) {
     const m = /^L(\d+)/i.exec(videoId);
@@ -15,7 +16,7 @@ function videoLotStr(videoId) {
 }
 
 function showFullText() {
-    return document.getElementById("show-full-text").checked;
+    return settings.showFullText;
 }
 
 export function renderThumb(r) {
