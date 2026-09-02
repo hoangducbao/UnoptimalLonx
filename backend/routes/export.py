@@ -7,6 +7,14 @@ export.py's pure ranking/dedup logic:
                                    for the popup's answer-area card(s).
   GET  /api/export/neighbors   -- a frame's N nearest keyframes by time, for
                                    the popup's "Neighbours" preview section.
+  GET  /api/export/similar     -- confirmed mode's "Similars" preview, a
+                                   fresh visual search seeded by the
+                                   confirmed frame itself.
+  GET  /api/export/nearest-keyframe -- snaps a raw native frame_idx to its
+                                   nearest indexed keyframe n, for the
+                                   Export tab's "Keyframes" checkbox
+                                   re-check (Keyframes-unchecked ->
+                                   checked).
   POST /api/export/trake-rows  -- TRAKE: one video's curated event list ->
                                    <=99 candidate row sequences, for the
                                    Export tab's client-side per-video cache.
@@ -37,7 +45,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from .. import export as export_mod
-from ..common import frame_idx_for_n, thumbnail_url
+from ..common import frame_idx_for_n, nearest_keyframe_n_for_frame_idx, thumbnail_url
 
 router = APIRouter()
 
@@ -52,6 +60,12 @@ class ExportRequest(BaseModel):
     neighbour_count: int = export_mod.DEFAULT_NEIGHBOUR_COUNT
     max_rows: int = 99
     filename: str = "export"
+    # Export tab's "Keyframes" checkbox: True (default, old behavior) means
+    # `confirmed`/`answers` carry {video_id, n} (an indexed keyframe).
+    # False means they carry {video_id, frame_idx} instead -- a raw native
+    # frame, e.g. picked straight from video playback rather than a
+    # result card -- see backend/export.py's generate_export() docstring.
+    keyframes: bool = True
 
 
 class TrakeRowsRequest(BaseModel):
@@ -86,11 +100,16 @@ def export_csv(body: ExportRequest):
     candidates = body.candidates
     try:
         if body.mode == "confirmed" and body.confirmed:
-            candidates = export_mod.similar_candidates_for_frame(body.confirmed["video_id"], body.confirmed["n"])
+            candidates = (
+                export_mod.similar_candidates_for_frame(body.confirmed["video_id"], body.confirmed["n"])
+                if body.keyframes else
+                export_mod.similar_candidates_for_native_frame(body.confirmed["video_id"], body.confirmed["frame_idx"])
+            )
         rows = export_mod.generate_export(
             candidates, body.mode,
             confirmed=body.confirmed, answers=body.answers,
             neighbour_count=body.neighbour_count, max_rows=body.max_rows,
+            keyframes=body.keyframes,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -145,6 +164,19 @@ def get_export_neighbors(video_id: str, n: int, count: int = export_mod.DEFAULT_
             for nb in ns
         ],
     }
+
+
+@router.get("/api/export/nearest-keyframe")
+def get_nearest_keyframe(video_id: str, frame_idx: int):
+    """Backs the Export tab's "Keyframes" checkbox: re-checking it while a
+    raw native frame (frame_idx, no n) is curated snaps that frame to its
+    nearest indexed keyframe, so the popup's keyframe-mode UI has an n to
+    show/work with again -- see backend/common.py's
+    nearest_keyframe_n_for_frame_idx()."""
+    n = nearest_keyframe_n_for_frame_idx(video_id, frame_idx)
+    if n is None:
+        raise HTTPException(404, f"no keyframes indexed for {video_id}")
+    return {"video_id": video_id, "n": n, "frame_idx": frame_idx_for_n(video_id, n), "thumbnail_url": thumbnail_url(video_id, n)}
 
 
 @router.get("/api/export/similar")

@@ -62,6 +62,16 @@ export function getExportSimilar(videoId, n, count) {
     return jsonFetch(`/api/export/similar?${qs}`);
 }
 
+// Export tab's "Keyframes" checkbox, re-checked while a raw native frame
+// (Keyframes unchecked) is curated -- snaps that frame_idx to its nearest
+// indexed keyframe so keyframe-mode UI has an n again (see
+// backend/export.py::similar_candidates_for_native_frame's docstring for
+// the same snap-to-nearest idea, used server-side for the CSV itself).
+export function getExportNearestKeyframe(videoId, frameIdx) {
+    const qs = new URLSearchParams({ video_id: videoId, frame_idx: frameIdx });
+    return jsonFetch(`/api/export/nearest-keyframe?${qs}`);
+}
+
 export async function uploadQueryImage(blob) {
     const form = new FormData();
     form.append("file", blob, "query.png");

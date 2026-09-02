@@ -52,7 +52,7 @@
 //     preview; a trigger without them still works, just starts the
 //     curation video at 0:00 with no event thumbnail, as before.
 
-import { exportCsv, getExportFrame, getExportNeighbors, getExportSimilar, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
+import { exportCsv, getExportFrame, getExportNearestKeyframe, getExportNeighbors, getExportSimilar, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
 import { fmtTime } from "./format.js";
 import { applyVideoPrefs, bindSpeedShortcut, captureVideoThumbnail } from "./video-controls.js";
 
@@ -68,8 +68,19 @@ function freshState(trigger) {
         queryType: isFlat ? "KIS" : "TRAKE", // "trake"/"frame" triggers default to TRAKE -- "frame" has no n for KIS/VQA's flat CSV path
         name: "",
         confirmed: true,
+        // Export tab's "Keyframes" checkbox (KIS/VQA only): checked (old
+        // behavior, unchanged) means the answer is an indexed keyframe n,
+        // same as everything below. Unchecked means it's a raw native
+        // frame_idx instead, curated via the `native` video-playback panel
+        // below rather than the Neighbours/Similars grids -- see the
+        // "KIS/VQA native (Keyframes-unchecked) curation" section further
+        // down. Defaults unchecked only for a "frame" trigger (opened from
+        // video playback, item 7), which has no keyframe n to check it
+        // *to* in the first place; togglable regardless, snapping to the
+        // nearest keyframe on re-check (getExportNearestKeyframe).
+        keyframes: trigger.kind !== "frame",
         answerText: "",
-        answerFrame: seed,          // confirmed-mode single answer (KIS/VQA)
+        answerFrame: seed,          // confirmed-mode single answer (KIS/VQA, keyframe n space)
         answers: seed ? [seed] : [], // unconfirmed-mode ordered list, pre-seeded per spec ("at least 1 frame")
         frameInfo: new Map(),        // "vid|n" -> {frame_idx, thumbnail_url} | "pending"
         neighbourFrames: null,       // cached /api/export/neighbors result (grows with `neighboursShown`)
@@ -84,20 +95,40 @@ function freshState(trigger) {
         // "Generate rows" call whose <=99 candidate sequences are cached
         // here per video_id; a final merge step interleaves however many
         // cached videos the human picked, in priority order, into one CSV.
-        // See freshTrakeState() below and the "TRAKE: curate one video's
-        // events..." section further down for the rest.
+        // See freshCurationState()/freshTrakeState() below and the
+        // "TRAKE: curate one video's events..." section further down for
+        // the rest.
         trake: freshTrakeState(),
+        // KIS/VQA native (Keyframes unchecked): the same per-video
+        // curation session shape as `trake` above (video + ordered
+        // frame_idx list), minus the cache/merge fields -- one "Generate
+        // rows" video isn't a thing here, the CSV is built straight from
+        // whatever's curated (see the export handler's native branch).
+        // Confirmed mode caps this list at one entry (replace, not
+        // append); unconfirmed allows several, same temporal-order insert
+        // as TRAKE events. See addEventToCuration() below.
+        native: freshCurationState(),
+    };
+}
+
+// Shared shape for both TRAKE's per-video curation session and KIS/VQA's
+// native (Keyframes-unchecked) one -- `trake` uses every field below plus
+// its own cache/merge fields (freshTrakeState() further down layers those
+// on top); `native` uses this as-is.
+function freshCurationState() {
+    return {
+        videoId: null,
+        events: [],       // [{frame_idx, thumbnail}] -- TRAKE keeps this in temporal (frame_idx) order; native unconfirmed mode is insertion order instead (see addEventToCuration)
+        dragIndex: null,
+        videoEl: null,     // the curation panel's live <video>, for Add/capture
+        unbindSpeedShortcut: null, // bindSpeedShortcut()'s cleanup for the current videoEl
+        fps: 25,
     };
 }
 
 function freshTrakeState() {
     return {
-        videoId: null,
-        events: [],       // [{frame_idx, thumbnail}], in sequence order (event 1..N)
-        dragIndex: null,
-        videoEl: null,     // the curation panel's live <video>, for Add/capture
-        unbindSpeedShortcut: null, // bindSpeedShortcut()'s cleanup for the current videoEl
-        fps: 25,
+        ...freshCurationState(),
         // video_id -> {frameIdxs: [...], rows: [[f1..fN], ...]} -- one
         // entry per "Generate rows" click; overwritten if regenerated for
         // the same video_id.
@@ -189,12 +220,15 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         <div class="checkbox-row" id="exp-confirmed-row">
           <input type="checkbox" id="exp-confirmed" checked>
           <label for="exp-confirmed" style="margin:0;">Confirmed</label>
+          <input type="checkbox" id="exp-keyframes" style="margin:0 0 0 1rem;">
+          <label for="exp-keyframes" style="margin:0;">Keyframes</label>
         </div>
         <div id="exp-flat-body">
-          <div class="export-answer-area">
+          <div class="export-answer-area" id="exp-answer-area">
             <div id="exp-answer-content"></div>
             <input type="text" id="exp-answer-text" placeholder="VQA answer" style="display:none;">
           </div>
+          <div id="exp-native-content" style="display:none;"></div>
         </div>
         <div id="exp-trake-body" style="display:none;">
           <div id="exp-trake-content"></div>
@@ -235,41 +269,72 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             btn.classList.toggle("active", btn.dataset.type === s.queryType);
         });
         const isTrake = s.queryType === "TRAKE";
+        // KIS/VQA with "Keyframes" unchecked: curated via a video-playback
+        // panel (like TRAKE's) instead of the keyframe grids, in native
+        // frame_idx space -- see the "KIS/VQA native curation" section.
+        const nativeMode = !isTrake && !s.keyframes;
+        const isVqa = s.queryType === "VQA";
         el("#exp-trake-body").style.display = isTrake ? "block" : "none";
         el("#exp-flat-body").style.display = isTrake ? "none" : "block";
         // No confirmed/unconfirmed distinction for TRAKE any more (see
-        // module docstring) -- the checkbox only means something for
-        // KIS/VQA.
+        // module docstring) -- the row (Confirmed + Keyframes) only means
+        // something for KIS/VQA.
         el("#exp-confirmed-row").style.display = isTrake ? "none" : "flex";
-        // No Neighbours/Similars preview for TRAKE at all -- per spec,
-        // TRAKE events have no "similar" pool to search (only a picked
-        // frame's own keyframe/native-distance neighbours, which is what
-        // row generation already computes server-side); events come from
-        // the curation panel's video playback, the Frame ID box, or the
-        // seeding trigger only. renderPreview() itself skips fetching for
-        // TRAKE too, not just this visibility toggle.
-        el("#exp-preview-area").style.display = isTrake ? "none" : "flex";
+        // #exp-answer-text gets relocated out of #exp-answer-area below
+        // (native+VQA only, into #exp-change-fields) -- hiding the whole
+        // area here doesn't take it down too, since a moved DOM node is
+        // no longer a descendant of its old (now-hidden) parent.
+        el("#exp-answer-area").style.display = nativeMode ? "none" : "block";
+        el("#exp-native-content").style.display = nativeMode ? "block" : "none";
+        // No Neighbours/Similars preview for TRAKE, or for native KIS/VQA
+        // (Keyframes unchecked) -- per spec, neither has a keyframe-space
+        // "similar" pool to browse (row generation computes the
+        // equivalent server-side, snapped to the nearest keyframe for
+        // native mode -- see backend/export.py's
+        // similar_candidates_for_native_frame). renderPreview() itself
+        // skips fetching for both cases too, not just this toggle.
+        el("#exp-preview-area").style.display = (isTrake || nativeMode) ? "none" : "flex";
 
-        // Frame ID/Change is repurposed for TRAKE, not hidden: a native
-        // frame number needs no keyframe lookup, so it means "add an
-        // event to the video currently being curated" instead of
-        // "replace/add the answer frame". Video ID is locked to that
-        // video (switching video is its own explicit action inside the
-        // TRAKE curation panel below) so the user can't typo an event
-        // into the wrong video's sequence.
-        el("#exp-change-frame").placeholder = isTrake ? "Frame ID (real frame)" : "Frame ID";
-        el("#exp-change-btn").textContent = isTrake ? "Add event" : "Change";
+        // Video ID/Frame ID/Change-or-Add-event: TRAKE still repurposes
+        // this row (a raw frame_idx event, added to whatever video the
+        // TRAKE panel below is curating) and keyframe-mode KIS/VQA keeps
+        // its original "Change" lookup -- native (Keyframes-unchecked)
+        // KIS/VQA drops the Video ID/Frame ID/button trio entirely
+        // instead (item 1.1, both KIS and VQA): the only way to add a
+        // frame there is the curation panel's own video. VQA reuses that
+        // vacated topbar slot for the answer text box (item 2, "export
+        // this qa answer same as checked keyframes mode" -- same
+        // s.answerText field either way, just needs somewhere visible to
+        // type into once #exp-answer-area itself is out of the picture);
+        // KIS leaves the whole row empty/hidden.
+        const changeFields = el("#exp-change-fields");
         const changeVideo = el("#exp-change-video");
-        changeVideo.readOnly = isTrake;
-        changeVideo.value = isTrake ? (s.trake.videoId || "") : "";
-        changeVideo.title = isTrake ? "Switch curation video from the TRAKE panel below" : "";
+        const changeFrame = el("#exp-change-frame");
+        const changeBtn = el("#exp-change-btn");
+        const answerText = el("#exp-answer-text");
+        if (nativeMode) {
+            changeVideo.style.display = "none";
+            changeFrame.style.display = "none";
+            changeBtn.style.display = "none";
+            changeFields.style.display = isVqa ? "flex" : "none";
+            if (isVqa) changeFields.append(answerText); // .export-change-fields input styles it to fill the row
+        } else {
+            changeVideo.style.display = "block";
+            changeFrame.style.display = "block";
+            changeBtn.style.display = "block";
+            changeFields.style.display = "flex";
+            el("#exp-answer-area").append(answerText); // back to its normal spot, after #exp-answer-content
+            changeFrame.placeholder = isTrake ? "Frame ID (real frame)" : "Frame ID";
+            changeBtn.textContent = isTrake ? "Add event" : "Change";
+            changeVideo.readOnly = isTrake;
+            changeVideo.value = isTrake ? (s.trake.videoId || "") : "";
+            changeVideo.title = isTrake ? "Switch curation video from the panel below" : "";
+        }
 
         // Same typing box either way -- unconfirmed mode used to disable
         // this with an "LLM needed" placeholder (answering unconfirmed
         // VQA queries was meant to be automated later), but that's no
         // longer the plan: a human types the answer regardless of mode.
-        const isVqa = s.queryType === "VQA";
-        const answerText = el("#exp-answer-text");
         answerText.style.display = isVqa ? "block" : "none";
         answerText.disabled = false;
         answerText.placeholder = "VQA answer";
@@ -291,6 +356,15 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
 
     function renderAnswerContent() {
         const content = el("#exp-answer-content");
+        // Native (Keyframes-unchecked) KIS/VQA uses the curation panel in
+        // #exp-native-content instead (hidden along with this whole area,
+        // see renderTypeVisibility) -- nothing to fetch/render here, and
+        // skipping avoids a wasted ensureFrameInfo() round trip for a
+        // stale s.answerFrame/s.answers left over from keyframe mode.
+        if (!s.keyframes) {
+            content.innerHTML = "";
+            return;
+        }
         if (s.confirmed) {
             if (!s.answerFrame) {
                 content.innerHTML = `<div class="status-banner info">No frame selected -- open this from a result card's ★ button.</div>`;
@@ -375,7 +449,10 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     // docstring: a TRAKE pick's only "similar" pool is what row generation
     // already computes server-side, not something to browse here).
     async function renderPreview() {
-        if (s.queryType === "TRAKE") return;
+        // No Neighbours/Similars preview for TRAKE, or for native
+        // (Keyframes-unchecked) KIS/VQA -- see renderTypeVisibility's
+        // #exp-preview-area toggle and module docstring.
+        if (s.queryType === "TRAKE" || !s.keyframes) return;
 
         const addable = !s.confirmed;
         const replaceable = s.confirmed;
@@ -483,15 +560,29 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         }
     }
 
-    // --- TRAKE: curate one video's events -> cache its generated rows ->
-    // merge however many cached videos into the final export -----------
+    // --- Shared curation-panel machinery: TRAKE's per-video event list
+    // (curate -> cache its generated rows -> merge several cached videos)
+    // and KIS/VQA's native (Keyframes-unchecked) answer-frame curation
+    // both boil down to "one video, an ordered native frame_idx list,
+    // played and captured from a live <video>" -- `kind` ("trake" |
+    // "native") picks which state bucket (s.trake / s.native) and DOM ids
+    // a call operates on. TRAKE layers its own cache/merge panel on top
+    // (generateRowsForCurationVideo() etc. below, unaffected by this) --
+    // "native" has no such extra step, the curated list goes straight
+    // into the export payload. ---------------------------------------
+
+    function curationTarget(kind) {
+        return kind === "trake"
+            ? { state: s.trake, wrapId: "#trake-video-wrap", timerId: "#trake-cur-timer", speedId: "#trake-cur-speed", listId: "#trake-event-list" }
+            : { state: s.native, wrapId: "#native-video-wrap", timerId: "#native-cur-timer", speedId: "#native-cur-speed", listId: "#native-event-list" };
+    }
 
     // Loads (or switches the curation panel to) a video: fetches playback
     // info and builds a fresh <video>. Switching to a *different* video
     // than the one currently being curated starts a clean event list --
-    // any cache entry already generated for either video is untouched
-    // (cache entries persist independently of what's in the live curation
-    // panel, see generateRowsForCurationVideo()).
+    // any TRAKE cache entry already generated for either video is
+    // untouched (cache entries persist independently of what's in the
+    // live curation panel, see generateRowsForCurationVideo()).
     // `seekTime` (seconds) picks up video playback exactly where the user
     // left it in whatever dialog they hit "Export this frame" from (see
     // dialogs.js's current_time handoff). `seekN` is the alternative for a
@@ -499,42 +590,48 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     // TRAKE, or a "flat" trigger's own seed): rather than convert n to a
     // time ourselves, /api/playback already resolves a keyframe's own
     // timestamp server-side (same lookup a KIS/VQA playback dialog uses),
-    // so passing it as `n` here gets the exact same start_time. Neither
-    // given (both default) starts at 0:00, same as before, for every other
-    // way this panel gets loaded/switched (typed Video ID, a plain video
-    // switch, a "trake" trigger's own multi-event seeding).
-    async function loadCurationVideo(videoId, { seekTime = 0, seekN = null } = {}) {
+    // so passing it as `n` here gets the exact same start_time. `seekFrameIdx`
+    // is the native-space equivalent, for handing a raw frame_idx (no n)
+    // off between the two curation panels -- computed from the freshly
+    // fetched fps once it's known. None given (all default) starts at
+    // 0:00, same as before, for every other way a panel gets loaded/
+    // switched (typed Video ID, a plain video switch, a "trake" trigger's
+    // own multi-event seeding).
+    async function loadCurationVideo(videoId, kind, { seekTime = 0, seekN = null, seekFrameIdx = null } = {}) {
+        const { state, wrapId, timerId, speedId } = curationTarget(kind);
         videoId = (videoId || "").trim().toUpperCase();
         if (!videoId) return;
-        if (videoId !== s.trake.videoId) {
-            s.trake.videoId = videoId;
-            s.trake.events = [];
-            renderEventList();
+        if (videoId !== state.videoId) {
+            state.videoId = videoId;
+            state.events = [];
+            renderCurationEventList(kind);
         }
         clearStatus();
         renderTypeVisibility(); // keeps the topbar's locked Video ID display in sync
-        const wrap = el("#trake-video-wrap");
+        const wrap = el(wrapId);
         if (wrap) wrap.innerHTML = `<div class="status-banner info">Loading…</div>`;
         try {
             const data = await getPlayback(videoId, seekN ?? undefined);
-            if (el("#trake-video-wrap") !== wrap) return; // panel torn down mid-fetch (query type switched away)
-            s.trake.fps = data.fps;
+            if (el(wrapId) !== wrap) return; // panel torn down mid-fetch (query type switched away)
+            state.fps = data.fps;
             wrap.innerHTML = "";
             const video = document.createElement("video");
-            const t = seekN != null ? data.start_time : seekTime;
+            let t = seekTime;
+            if (seekN != null) t = data.start_time;
+            else if (seekFrameIdx != null) t = seekFrameIdx / (data.fps || 25);
             video.src = data.video_url + (t > 0 ? `#t=${t}` : "");
             video.controls = true;
             wrap.append(video);
             applyVideoPrefs(video);
-            if (s.trake.unbindSpeedShortcut) s.trake.unbindSpeedShortcut(); // drop the outgoing <video>'s listener before binding the new one
-            s.trake.unbindSpeedShortcut = bindSpeedShortcut(video, wrap, el("#trake-cur-speed"));
-            s.trake.videoEl = video;
-            const timer = el("#trake-cur-timer");
+            if (state.unbindSpeedShortcut) state.unbindSpeedShortcut(); // drop the outgoing <video>'s listener before binding the new one
+            state.unbindSpeedShortcut = bindSpeedShortcut(video, wrap, el(speedId));
+            state.videoEl = video;
+            const timer = el(timerId);
             video.addEventListener("timeupdate", () => {
-                timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * s.trake.fps)}`;
+                timer.textContent = `${fmtTime(video.currentTime)} · frame ${Math.round(video.currentTime * state.fps)}`;
             });
         } catch (e) {
-            s.trake.videoEl = null;
+            state.videoEl = null;
             if (wrap) wrap.innerHTML = `<div class="status-banner error">${e.message}</div>`;
         }
     }
@@ -542,91 +639,133 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     // Adds one event to the video currently being curated -- from the
     // inline "Add current frame" button (f.thumbnail already captured) or
     // the repurposed Frame ID/Change row (raw frame_idx, no thumbnail).
-    // Enforces the one hard constraint: a TRAKE export row is exactly one
-    // video, so a frame from a different video is rejected rather than
-    // silently starting a second, unrepresentable sequence.
+    // Enforces the one hard constraint: a TRAKE export row (or a native
+    // KIS/VQA answer list) is exactly one video, so a frame from a
+    // different video is rejected rather than silently starting a second,
+    // unrepresentable sequence.
     //
-    // Inserted in temporal order (by frame_idx) rather than always
-    // appended -- adding an earlier frame after later ones (e.g. scrubbing
-    // back, or the Frame ID box) lands it in the right spot immediately
-    // instead of needing a manual drag to fix the sequence. Assumes the
-    // list is already ordered, which holds as long as every addition goes
-    // through here; drag-to-reorder can still freely override this after
-    // the fact.
-    function addTrakeEvent(f) {
-        if (s.trake.videoId && f.video_id !== s.trake.videoId) {
-            showStatus(`Currently curating ${s.trake.videoId} -- this frame is from a different video. Switch videos above first if you meant to add it there.`);
+    // TRAKE inserts in temporal order (by frame_idx) rather than always
+    // appending -- adding an earlier frame after later ones (e.g.
+    // scrubbing back, or the Frame ID box) lands it in the right spot
+    // immediately instead of needing a manual drag to fix the sequence.
+    // Assumes the list is already ordered, which holds as long as every
+    // addition goes through here; drag-to-reorder can still freely
+    // override this after the fact.
+    // Native (KIS/VQA, Keyframes unchecked) is different in kind, not
+    // just order: confirmed mode is exactly one answer frame, so a new
+    // pick there replaces the list instead of inserting into it (its "one
+    // frame, whatever's live" caption doesn't have a rank to preserve);
+    // unconfirmed mode is a plain append, no temporal sort at all -- each
+    // pick becomes the next "Cand N" in whatever order the human added
+    // them, not sorted by frame_idx (item 1.3).
+    function addEventToCuration(kind, f) {
+        const { state } = curationTarget(kind);
+        if (state.videoId && f.video_id !== state.videoId) {
+            showStatus(`Currently curating ${state.videoId} -- this frame is from a different video. Switch videos above first if you meant to add it there.`);
             return false;
         }
-        if (!s.trake.videoId) s.trake.videoId = f.video_id;
+        if (!state.videoId) state.videoId = f.video_id;
         const entry = { frame_idx: f.frame_idx, thumbnail: f.thumbnail ?? null };
-        const insertAt = s.trake.events.findIndex((e) => e.frame_idx > entry.frame_idx);
-        if (insertAt === -1) s.trake.events.push(entry);
-        else s.trake.events.splice(insertAt, 0, entry);
+        if (kind === "native") {
+            if (s.confirmed) state.events = [entry];
+            else state.events.push(entry);
+        } else {
+            const insertAt = state.events.findIndex((e) => e.frame_idx > entry.frame_idx);
+            if (insertAt === -1) state.events.push(entry);
+            else state.events.splice(insertAt, 0, entry);
+        }
         clearStatus();
-        renderEventList();
+        renderCurationEventList(kind);
         return true;
     }
 
     // Resolves a keyframe n (not a raw frame_idx) to its real frame_idx +
-    // thumbnail before adding -- used to seed the curation panel from a
+    // thumbnail before adding -- used to seed a curation panel from a
     // "flat" trigger (any non-TRAKE signal's ★, which only carries n, no
     // frame_idx) via the same lookup the rest of the app already does.
-    function addTrakeEventFromN(videoId, n) {
-        if (s.trake.videoId && videoId !== s.trake.videoId) {
-            showStatus(`Currently curating ${s.trake.videoId} -- this frame is from a different video. Switch videos above first if you meant to add it there.`);
+    function addEventFromN(kind, videoId, n) {
+        const { state } = curationTarget(kind);
+        if (state.videoId && videoId !== state.videoId) {
+            showStatus(`Currently curating ${state.videoId} -- this frame is from a different video. Switch videos above first if you meant to add it there.`);
             return;
         }
         getExportFrame(videoId, n).then((info) => {
-            addTrakeEvent({ video_id: videoId, frame_idx: info.frame_idx, thumbnail: info.thumbnail_url });
+            addEventToCuration(kind, { video_id: videoId, frame_idx: info.frame_idx, thumbnail: info.thumbnail_url });
         }).catch((e) => showStatus(e.message));
     }
 
-    function removeTrakeEvent(i) {
-        s.trake.events.splice(i, 1);
-        renderEventList();
+    function removeCurationEvent(kind, i) {
+        const { state } = curationTarget(kind);
+        state.events.splice(i, 1);
+        renderCurationEventList(kind);
     }
-    function moveTrakeEvent(from, to) {
-        const [ev] = s.trake.events.splice(from, 1);
-        s.trake.events.splice(to, 0, ev);
-        renderEventList();
+    function moveCurationEvent(kind, from, to) {
+        const { state } = curationTarget(kind);
+        const [ev] = state.events.splice(from, 1);
+        state.events.splice(to, 0, ev);
+        renderCurationEventList(kind);
     }
-    function wireTrakeEventDnd(list) {
+    function wireCurationEventDnd(kind, list) {
+        const { state } = curationTarget(kind);
         for (const row of list.querySelectorAll(".trake-event-row")) {
             const i = Number(row.dataset.index);
-            row.addEventListener("dragstart", () => { s.trake.dragIndex = i; });
+            row.addEventListener("dragstart", () => { state.dragIndex = i; });
             row.addEventListener("dragover", (e) => e.preventDefault());
             row.addEventListener("drop", (e) => {
                 e.preventDefault();
-                if (s.trake.dragIndex === null || s.trake.dragIndex === i) return;
-                moveTrakeEvent(s.trake.dragIndex, i);
-                s.trake.dragIndex = null;
+                if (state.dragIndex === null || state.dragIndex === i) return;
+                moveCurationEvent(kind, state.dragIndex, i);
+                state.dragIndex = null;
             });
             const removeBtn = row.querySelector(".export-remove-btn");
-            if (removeBtn) removeBtn.onclick = () => removeTrakeEvent(i);
+            if (removeBtn) removeBtn.onclick = () => removeCurationEvent(kind, i);
         }
     }
 
-    // Only the event list -- never the video element or the cache panel --
-    // so adding/removing/reordering an event never interrupts playback.
-    function renderEventList() {
-        const list = el("#trake-event-list");
+    // Only the event list -- never the video element or the TRAKE cache
+    // panel -- so adding/removing/reordering an event never interrupts
+    // playback.
+    //
+    // Caption differs by kind/mode (items 1.2/1.3): TRAKE keeps "E1, E2,
+    // ..." (a sequence of events within one video). Native confirmed mode
+    // is exactly one frame with no rank to show, so its label is the
+    // video_id instead of "E1". Native unconfirmed mode is a pool of
+    // candidate answer frames, not a sequence -- "Cand 1, Cand 2, ..."
+    // instead of "E1, E2, ...", with the video_id shown too (all
+    // candidates share state.videoId, same one-video-per-curation-session
+    // constraint as TRAKE, but it's less obviously implied here since
+    // there's no "sequence" framing to carry it).
+    function renderCurationEventList(kind) {
+        const { state, listId } = curationTarget(kind);
+        const list = el(listId);
         if (!list) return;
-        if (!s.trake.events.length) {
-            list.innerHTML = `<div class="status-banner info">No events yet -- play the video and click "Add current frame", or add one from a preview card's "+" / the Frame ID box above.</div>`;
+        if (!state.events.length) {
+            const msg = kind === "trake"
+                ? `No events yet -- play the video and click "Add current frame as event", or add one via the Frame ID box above.`
+                : s.confirmed
+                    ? `No frame chosen yet -- play the video and click "Switch to this frame".`
+                    : `No candidates yet -- play the video and click "+ Add current frame".`;
+            list.innerHTML = `<div class="status-banner info">${msg}</div>`;
             return;
         }
-        list.innerHTML = s.trake.events.map((e, i) => `
+        list.innerHTML = state.events.map((e, i) => {
+            const caption = kind === "trake"
+                ? `<b>E${i + 1}</b> <span class="muted">· frame ${e.frame_idx}</span>`
+                : s.confirmed
+                    ? `<b>${state.videoId}</b> <span class="muted">· frame ${e.frame_idx}</span>`
+                    : `<b>Cand ${i + 1}</b> <span class="muted">· ${state.videoId} · frame ${e.frame_idx}</span>`;
+            return `
             <div class="trake-event-row" draggable="true" data-index="${i}">
                 ${e.thumbnail
                     ? `<div class="thumb-wrap thumb-wrap-static"><img src="${e.thumbnail}" loading="lazy"></div>`
                     : `<div class="thumb-missing">no preview</div>`}
                 <div class="trake-event-fields">
-                    <div class="thumb-caption"><b>E${i + 1}</b> <span class="muted">· frame ${e.frame_idx}</span></div>
+                    <div class="thumb-caption">${caption}</div>
                 </div>
                 <button class="icon-btn export-remove-btn" title="Remove" data-index="${i}">✕</button>
-            </div>`).join("");
-        wireTrakeEventDnd(list);
+            </div>`;
+        }).join("");
+        wireCurationEventDnd(kind, list);
     }
 
     // POSTs this video's curated {video_id, frame_idxs} to
@@ -743,7 +882,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     let trakeSkeletonBuilt = false;
 
     // Builds the panel's static DOM once (the video element and cache
-    // list are updated in place afterward, by renderEventList()/
+    // list are updated in place afterward, by renderCurationEventList()/
     // renderCacheList(), never rebuilt wholesale -- rebuilding on every
     // state change would tear down and restart the <video> mid-playback).
     function ensureTrakeSkeleton() {
@@ -752,8 +891,8 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         el("#exp-trake-content").innerHTML = `
             <div class="trake-curate-panel">
               <div class="trake-toprow">
-                <input type="text" id="trake-load-video" placeholder="Video ID e.g. L21_V001">
-                <button class="btn" id="trake-load-btn" type="button">Load / switch</button>
+                <input type="text" id="trake-load-video" class="curate-load-video" placeholder="Video ID e.g. L21_V001">
+                <button class="btn curate-load-btn" id="trake-load-btn" type="button">Load / switch</button>
                 <span id="trake-cur-timer" class="playback-timer">--:-- · frame --</span>
                 <span id="trake-cur-speed" class="playback-speed" title="&lt; / , slower, &gt; / . faster, 0 resets to 1x">1x</span>
                 <button class="btn btn-primary" id="trake-add-btn" type="button">+ Add current frame as event</button>
@@ -775,20 +914,78 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
               <div id="trake-cache-list"></div>
             </div>`;
 
-        el("#trake-load-btn").onclick = () => loadCurationVideo(el("#trake-load-video").value);
+        el("#trake-load-btn").onclick = () => loadCurationVideo(el("#trake-load-video").value, "trake");
         el("#trake-add-btn").onclick = () => {
             if (!s.trake.videoEl) { showStatus("No video loaded to capture a frame from."); return; }
             const video = s.trake.videoEl;
             const frame_idx = Math.round(video.currentTime * s.trake.fps);
-            addTrakeEvent({ video_id: s.trake.videoId, frame_idx, thumbnail: captureVideoThumbnail(video) });
+            addEventToCuration("trake", { video_id: s.trake.videoId, frame_idx, thumbnail: captureVideoThumbnail(video) });
         };
         el("#trake-generate-btn").onclick = generateRowsForCurationVideo;
     }
 
     function renderTrakeContent() {
         ensureTrakeSkeleton();
-        renderEventList();
+        renderCurationEventList("trake");
         renderCacheList();
+    }
+
+    // --- KIS/VQA native (Keyframes-unchecked) curation: same video-
+    // playback panel as TRAKE's, minus the Generate-rows/cache/merge step
+    // -- the curated list (capped at one frame in confirmed mode) goes
+    // straight into the export payload, see the export handler's native
+    // branch below. ------------------------------------------------------
+
+    let nativeSkeletonBuilt = false;
+
+    function ensureNativeSkeleton() {
+        if (nativeSkeletonBuilt) return;
+        nativeSkeletonBuilt = true;
+        el("#exp-native-content").innerHTML = `
+            <div class="trake-curate-panel">
+              <div class="trake-toprow">
+                <input type="text" id="native-load-video" class="curate-load-video" placeholder="Video ID e.g. L21_V001">
+                <button class="btn curate-load-btn" id="native-load-btn" type="button">Load / switch</button>
+                <span id="native-cur-timer" class="playback-timer">--:-- · frame --</span>
+                <span id="native-cur-speed" class="playback-speed" title="&lt; / , slower, &gt; / . faster, 0 resets to 1x">1x</span>
+                <button class="btn btn-primary" id="native-add-btn" type="button">+ Add current frame</button>
+              </div>
+              <div class="trake-main-row">
+                <div class="trake-video-col" id="native-video-wrap">
+                  <div class="status-banner info">Load a video above, or open this tab from a result card's ★.</div>
+                </div>
+                <div class="trake-events-col">
+                  <div class="thumb-caption muted" id="native-events-label" style="margin-bottom:0.4rem;"></div>
+                  <div class="trake-event-list" id="native-event-list"></div>
+                </div>
+              </div>
+            </div>`;
+
+        el("#native-load-btn").onclick = () => loadCurationVideo(el("#native-load-video").value, "native");
+        el("#native-add-btn").onclick = () => {
+            if (!s.native.videoEl) { showStatus("No video loaded to capture a frame from."); return; }
+            const video = s.native.videoEl;
+            const frame_idx = Math.round(video.currentTime * s.native.fps);
+            addEventToCuration("native", { video_id: s.native.videoId, frame_idx, thumbnail: captureVideoThumbnail(video) });
+        };
+    }
+
+    function renderNativeContent() {
+        ensureNativeSkeleton();
+        const label = el("#native-events-label");
+        if (label) {
+            label.textContent = s.confirmed
+                ? "Chosen frame:"
+                : "Candidate answer frames, in the order added -- drag to reorder, ✕ to remove:";
+        }
+        // Confirmed mode is exactly one answer frame -- clicking Add again
+        // doesn't add a second one, it swaps to whatever's playing now
+        // (item 1.2), so the button reads that way instead of "Add".
+        // Unconfirmed keeps the plain "add" phrasing (item 1.3 only asked
+        // to rename the confirmed-mode button).
+        const addBtn = el("#native-add-btn");
+        if (addBtn) addBtn.textContent = s.confirmed ? "Switch to this frame" : "+ Add current frame";
+        renderCurationEventList("native");
     }
 
     // --- wiring ---------------------------------------------------------
@@ -802,44 +999,112 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             // resumes at that exact keyframe's timestamp instead of 0:00.
             const enteringTrake = btn.dataset.type === "TRAKE" && s.queryType !== "TRAKE";
             const seedFrame = enteringTrake ? (s.answerFrame || s.answers[0] || null) : null;
+            // Reverse handoff: leaving TRAKE into a Keyframes-unchecked
+            // KIS/VQA whose native panel hasn't loaded a video yet (e.g.
+            // seeded straight from a "frame" trigger -- item 7, both
+            // panels get seeded with the same raw frame up front, see the
+            // bottom of this function) -- match its playback to wherever
+            // that seed left off, same idea as seedFrame above but the
+            // other direction.
+            const enteringNative = btn.dataset.type !== "TRAKE" && s.queryType === "TRAKE" && !s.keyframes
+                && s.native.videoId && !s.native.videoEl;
+            const nativeSeekFrame = enteringNative ? s.native.events[0] : null;
             s.queryType = btn.dataset.type;
             renderTypeVisibility();
             renderTrakeContent();
+            renderNativeContent();
             renderAnswerContent();
             renderPreview(); // replaceable depends on queryType (TRAKE has no single answer frame)
-            if (seedFrame) loadCurationVideo(seedFrame.video_id, { seekN: seedFrame.n });
+            if (seedFrame) loadCurationVideo(seedFrame.video_id, "trake", { seekN: seedFrame.n });
+            if (enteringNative) {
+                loadCurationVideo(s.native.videoId, "native", nativeSeekFrame ? { seekFrameIdx: nativeSeekFrame.frame_idx } : {});
+            }
         };
     });
     el("#exp-name").oninput = (e) => { s.name = e.target.value; };
     el("#exp-answer-text").oninput = (e) => { s.answerText = e.target.value; };
     el("#exp-confirmed").onchange = (e) => {
         s.confirmed = e.target.checked;
+        // Native mode's list is shared storage between confirmed (exactly
+        // one frame) and unconfirmed (several) -- collapse down to the
+        // first entry on the way into confirmed, same idea as
+        // applyChangedFrame's n-space equivalent below.
+        if (s.confirmed && s.native.events.length > 1) s.native.events = [s.native.events[0]];
         renderTypeVisibility();
         renderAnswerContent();
+        renderNativeContent();
         renderPreview();
         renderTrakeContent();
+    };
+    el("#exp-keyframes").checked = s.keyframes;
+    el("#exp-keyframes").onchange = async (e) => {
+        const next = e.target.checked;
+        clearStatus();
+        e.target.disabled = true;
+        s.keyframes = next;
+        renderTypeVisibility();
+        renderNativeContent(); // ensures the native skeleton exists before loadCurationVideo below touches it
+        renderAnswerContent();
+        renderPreview();
+        try {
+            if (next && s.native.events.length) {
+                // Re-checking: snap whatever native frame(s) are curated to
+                // their nearest keyframe n -- best-effort per event, since a
+                // raw playback frame rarely lands exactly on one.
+                const resolved = await Promise.all(s.native.events.map((ev) =>
+                    getExportNearestKeyframe(s.native.videoId, ev.frame_idx).catch(() => null)));
+                const frames = resolved.filter(Boolean).map((r) => ({ video_id: s.native.videoId, n: r.n }));
+                if (frames.length) {
+                    s.answerFrame = frames[0];
+                    s.answers = frames;
+                    renderAnswerContent();
+                    renderPreview();
+                }
+            } else if (!next && !s.native.events.length) {
+                // Unchecking with nothing curated in the native panel yet:
+                // seed it from whatever keyframe-space answer is already
+                // set, so the two modes hand off smoothly instead of
+                // starting from scratch. Skipped if the native panel
+                // already has something (e.g. re-toggled back and forth)
+                // -- never clobber curated work with a stale keyframe seed.
+                const seeds = s.confirmed ? (s.answerFrame ? [s.answerFrame] : []) : s.answers;
+                for (const f of seeds) {
+                    try {
+                        const info = await getExportFrame(f.video_id, f.n);
+                        addEventToCuration("native", { video_id: f.video_id, frame_idx: info.frame_idx, thumbnail: info.thumbnail_url });
+                    } catch (err) { /* unresolvable -- skip, not fatal */ }
+                }
+                if (seeds.length) await loadCurationVideo(seeds[0].video_id, "native", { seekN: seeds[0].n });
+            }
+        } finally {
+            e.target.disabled = false;
+        }
     };
     el("#exp-nbr-more").onclick = () => { s.neighboursShown += PREVIEW_PAGE; renderPreview(); };
     el("#exp-sim-more").onclick = () => { s.similarsShown += PREVIEW_PAGE; renderPreview(); };
     el("#exp-cancel").onclick = () => onDone("cancel");
 
-    // Typed "Video ID" / "Frame ID" boxes + Change/Add event button.
-    // KIS/VQA: same destination as the preview-pick (applyChangedFrame),
-    // but reaches an arbitrary frame not necessarily in either preview
-    // list -- verifies the frame actually exists (via /api/export/frame,
-    // n-based) before applying, so a typo lands as one clear error rather
-    // than a broken export.
+    // Typed "Video ID" / "Frame ID" boxes + Change/Add event button --
+    // KIS/VQA native mode (Keyframes unchecked) has no such row at all any
+    // more (item 1.1: dropped entirely, VQA gets the answer box in its
+    // place instead -- see renderTypeVisibility), so this only ever runs
+    // for TRAKE or keyframe-mode KIS/VQA.
+    // KIS/VQA keyframe mode: same destination as the preview-pick
+    // (applyChangedFrame), but reaches an arbitrary frame not necessarily
+    // in either preview list -- verifies the frame actually exists (via
+    // /api/export/frame, n-based) before applying, so a typo lands as one
+    // clear error rather than a broken export.
     // TRAKE: "Frame ID" is a raw native frame number, not a keyframe n,
-    // added to whatever video the curation panel below is already on --
-    // the (read-only) Video ID box is just a reminder of that, not a
-    // second way to pick the video (see the panel's own Load/switch row
+    // added to whatever video the TRAKE curation panel below is already
+    // on -- the (read-only) Video ID box is just a reminder of that, not
+    // a second way to pick the video (see the panel's own Load/switch row
     // for that). No backend round-trip needed at all.
     el("#exp-change-btn").onclick = async () => {
         clearStatus();
 
         if (s.queryType === "TRAKE") {
             if (!s.trake.videoId) {
-                showStatus("Load a video in the TRAKE panel below first.");
+                showStatus("Load a video in the panel below first.");
                 return;
             }
             const num = parseFrameIdInput(el("#exp-change-frame").value);
@@ -847,7 +1112,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
                 showStatus("Enter a real frame number.");
                 return;
             }
-            if (addTrakeEvent({ video_id: s.trake.videoId, frame_idx: num })) {
+            if (addEventToCuration("trake", { video_id: s.trake.videoId, frame_idx: num })) {
                 el("#exp-change-frame").value = "";
             }
             return;
@@ -923,6 +1188,47 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             return;
         }
 
+        // KIS/VQA, Keyframes unchecked: the answer is whatever's curated in
+        // the native panel (native frame_idx space) rather than
+        // s.answerFrame/s.answers -- candidates/neighbours-by-time still
+        // get computed server-side (item 2: same backend logic, no
+        // preview), just from generate_export()'s keyframes=false branch
+        // instead. Confirmed mode's "similar" tier there is a fresh visual
+        // search snapped to the curated frame's nearest keyframe
+        // (similar_candidates_for_native_frame) -- computed on the
+        // backend regardless of what `candidates` carries here, same as
+        // keyframe-mode confirmed below.
+        if (!s.keyframes) {
+            if (!s.native.events.length) {
+                showStatus(s.confirmed
+                    ? "No chosen frame -- play the video and click \"Switch to this frame\"."
+                    : "Add at least one answer frame from the video.");
+                return;
+            }
+            const body = {
+                query_type: s.queryType,
+                mode: s.confirmed ? "confirmed" : "unconfirmed",
+                keyframes: false,
+                candidates: s.confirmed ? [] : getCandidates(),
+                confirmed: s.confirmed ? { video_id: s.native.videoId, frame_idx: s.native.events[0].frame_idx } : null,
+                answers: s.confirmed ? [] : s.native.events.map((e) => ({ video_id: s.native.videoId, frame_idx: e.frame_idx })),
+                answer: s.answerText,
+                neighbour_count: NEIGHBOUR_COUNT_EXPORT,
+                filename: queryFilename(s.queryType, s.name),
+            };
+            const exportBtn = el("#exp-export");
+            exportBtn.disabled = true;
+            try {
+                await exportCsv(body);
+                showStatus(`✓ Exported ${body.filename}.csv -- you can export again from here if needed.`, "info");
+            } catch (e) {
+                showStatus(e.message);
+            } finally {
+                exportBtn.disabled = false;
+            }
+            return;
+        }
+
         if (s.confirmed && !s.answerFrame) {
             showStatus("No confirmed frame -- open this from a result card.");
             return;
@@ -934,6 +1240,7 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
         const body = {
             query_type: s.queryType,
             mode: s.confirmed ? "confirmed" : "unconfirmed",
+            keyframes: true,
             candidates: getCandidates(),
             confirmed: s.confirmed ? s.answerFrame : null,
             answers: s.confirmed ? [] : s.answers,
@@ -958,61 +1265,64 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
     };
 
     // A "frame" trigger (from video playback) has no keyframe n at all --
-    // KIS/VQA's flat CSV path needs one (backend's frame_idx_for_n), so
-    // those two types aren't usable here. TRAKE stays the only option.
-    if (trigger.kind === "frame") {
-        for (const type of ["KIS", "VQA"]) {
-            const btn = el(`#exp-segmented button[data-type="${type}"]`);
-            btn.disabled = true;
-            btn.title = "Needs a keyframe-backed frame -- use TRAKE for a native frame from playback.";
-        }
-    }
+    // all three query types are usable regardless (item 7): TRAKE and
+    // native (Keyframes-unchecked) KIS/VQA work directly off the raw
+    // frame_idx it carries; checking Keyframes back on for KIS/VQA snaps
+    // to the nearest indexed keyframe (the #exp-keyframes handler above).
 
     renderTypeVisibility();
     renderAnswerContent();
     renderPreview();
     renderTrakeContent();
+    renderNativeContent();
 
-    // Seed the curation panel straight from `trigger` when it carries a
+    // Seed the curation panel(s) straight from `trigger` when it carries a
     // video/frame of its own -- any signal's result card, a real TRAKE
     // candidate's own matched events, or a raw playback frame can all
     // start (or extend) a TRAKE sequence, not just a real TRAKE search
     // (see module docstring). Not limited to when queryType actually
     // starts on TRAKE -- switching to TRAKE later still finds the panel
-    // already seeded.
+    // already seeded, and likewise for KIS/VQA's native panel (a "frame"
+    // trigger seeds both up front, below, since it has no way to know
+    // which one the user will end up on).
     // loadCurationVideo is called right after kicking the event-seeding
     // off (not awaited first) so the video starts loading immediately
     // rather than waiting on the frame-info round trip(s) below; its own
-    // videoId!==s.trake.videoId check still resets s.trake.events first,
-    // but that's a no-op here since freshState() always starts empty.
+    // videoId!==state.videoId check still resets state.events first, but
+    // that's a no-op here since freshState() always starts empty.
     let seedVideoId = null;
     if (trigger.kind === "trake") {
         // Resolved in parallel but applied in original event order (matters
-        // here, unlike a lone addTrakeEventFromN call elsewhere) -- several
-        // concurrent fetches racing straight into addTrakeEvent could
+        // here, unlike a lone addEventFromN call elsewhere) -- several
+        // concurrent fetches racing straight into addEventToCuration could
         // otherwise land E2 before E1 depending on which response arrives
         // first.
         seedVideoId = trigger.candidate.video_id;
         const matched = trigger.candidate.events.filter((e) => e.matched);
         Promise.all(matched.map((e) => getExportFrame(seedVideoId, e.n).catch(() => null))).then((infos) => {
             for (const info of infos) {
-                if (info) addTrakeEvent({ video_id: seedVideoId, frame_idx: info.frame_idx, thumbnail: info.thumbnail_url });
+                if (info) addEventToCuration("trake", { video_id: seedVideoId, frame_idx: info.frame_idx, thumbnail: info.thumbnail_url });
             }
         });
     } else if (trigger.kind === "flat") {
         seedVideoId = trigger.video_id;
-        addTrakeEventFromN(trigger.video_id, trigger.n);
+        addEventFromN("trake", trigger.video_id, trigger.n);
     } else if (trigger.kind === "frame") {
         seedVideoId = trigger.video_id;
         // thumbnail/current_time come from the playback dialog's own
         // canvas-snapshot + currentTime at the moment "Export this frame"
         // was clicked (dialogs.js) -- gives this event a real preview
         // instead of "no preview", and lets the curation video below
-        // resume from the same spot instead of restarting at 0:00.
-        addTrakeEvent({ video_id: trigger.video_id, frame_idx: trigger.frame_idx, thumbnail: trigger.thumbnail ?? null });
+        // resume from the same spot instead of restarting at 0:00. Seeds
+        // both the TRAKE and native KIS/VQA panels with the same frame --
+        // TRAKE starts active (queryType default above), but Keyframes
+        // defaults unchecked for this trigger too (freshState), so
+        // switching straight to KIS/VQA already has this frame ready.
+        addEventToCuration("trake", { video_id: trigger.video_id, frame_idx: trigger.frame_idx, thumbnail: trigger.thumbnail ?? null });
+        addEventToCuration("native", { video_id: trigger.video_id, frame_idx: trigger.frame_idx, thumbnail: trigger.thumbnail ?? null });
     }
     if (seedVideoId) {
-        loadCurationVideo(seedVideoId,
+        loadCurationVideo(seedVideoId, "trake",
             trigger.kind === "frame" ? { seekTime: trigger.current_time || 0 }
                 : trigger.kind === "flat" ? { seekN: trigger.n }
                     : {});

@@ -30,10 +30,20 @@ the caller-supplied candidates (the opener tab's last search results)
 as before. Either way, generate_export() below just takes whatever
 `candidates` list it's given -- routes/export.py's /api/export handler
 is what picks which one to pass, per mode.
-"Nearest keyframes by time" is deliberately keyframe-only for now (picks
-from the video's own existing extracted n's, ordered by |n - center| --
-equivalent to time-gap order since map-keyframes rows are chronological) --
-arbitrary non-keyframe frame_idx neighbours are a later phase.
+"Nearest keyframes by time" is keyframe-only by default (picks from the
+video's own existing extracted n's, ordered by |n - center| -- equivalent
+to time-gap order since map-keyframes rows are chronological). The Export
+tab's "Keyframes" checkbox unchecked switches to native mode instead (the
+confirmed frame/answers are a raw {video_id, frame_idx} straight from
+video playback rather than an indexed keyframe {video_id, n}) --
+generate_export(..., keyframes=False) then builds that one tier in
+frame_idx space via _event_neighbour_stream (TRAKE's own dual keyframe-
+distance/frame-number-distance neighbour logic, reused as-is) and its
+"similar-semantic" search snaps to the nearest keyframe first
+(similar_candidates_for_native_frame(), since a raw frame has no SigLIP2
+embedding of its own to search from). Everything else -- the similar/
+filler tiers themselves, rows_to_csv_text()'s formatting -- is unaffected
+either way.
 
 TRAKE row structure is different in kind, not just in row shape, and lives
 entirely outside generate_export()/rows_to_csv_text() below -- see
@@ -70,7 +80,10 @@ them.
 from random import Random
 from typing import Optional
 
-from .common import df_to_results, frame_idx_for_n, n_for_frame_idx, native_frame_range_for_video, valid_ns_for_video
+from .common import (
+    df_to_results, frame_idx_for_n, n_for_frame_idx, native_frame_range_for_video,
+    nearest_keyframe_n_for_frame_idx, valid_ns_for_video,
+)
 from .search import keyframe as kf_mod
 
 DEFAULT_NEIGHBOUR_COUNT = 10
@@ -112,21 +125,49 @@ def similar_candidates_for_frame(video_id: str, n: int, k: int = DEFAULT_SIMILAR
     return df_to_results(df, "score")
 
 
+def similar_candidates_for_native_frame(video_id: str, frame_idx: int, k: int = DEFAULT_SIMILAR_COUNT) -> list:
+    """Confirmed mode's "Similars" tier when the confirmed frame is a raw
+    native frame_idx rather than an indexed keyframe n (Export tab,
+    Keyframes unchecked -- e.g. a frame picked straight from video
+    playback). SigLIP2 embeddings only exist for actual extracted
+    keyframes, so there's no embedding to search from directly; this
+    snaps to the nearest keyframe (by frame_idx distance,
+    nearest_keyframe_n_for_frame_idx) and searches from *that* instead --
+    "similar to the frame nearest the one picked". Empty list if the video
+    has no keyframes indexed at all."""
+    n = nearest_keyframe_n_for_frame_idx(video_id, frame_idx)
+    if n is None:
+        return []
+    return similar_candidates_for_frame(video_id, n, k=k)
+
+
 def generate_export(candidates: list, mode: str,
                      confirmed: Optional[dict] = None, answers: Optional[list] = None,
-                     neighbour_count: int = DEFAULT_NEIGHBOUR_COUNT, max_rows: int = 99) -> list:
+                     neighbour_count: int = DEFAULT_NEIGHBOUR_COUNT, max_rows: int = 99,
+                     keyframes: bool = True) -> list:
     """Rank/dedup into <=max_rows rows for one query's submission CSV.
     `answer` (VQA text) isn't handled here -- it's the same string on
     every row, applied later by rows_to_csv_text(). KIS/VQA only -- TRAKE
     has its own generate_trake_rows() below, called through the dedicated
     /api/export/trake-rows + /api/export/trake-write routes instead of
     this one, since its curate/cache/merge flow doesn't fit this
-    single-shot candidates-in-rows-out shape."""
-    return _generate_export_flat(candidates, mode, confirmed, answers, neighbour_count, max_rows)
+    single-shot candidates-in-rows-out shape.
+
+    `keyframes=False` (Export tab's "Keyframes" checkbox unchecked) means
+    `confirmed`/`answers` carry a raw native {video_id, frame_idx} instead
+    of a keyframe {video_id, n} -- the confirmed/answers tier is built in
+    frame_idx space then, via _event_neighbour_stream (the same dual
+    keyframe-distance/frame-number-distance neighbour logic TRAKE events
+    already use) instead of nearest_keyframes_by_time. The similar-
+    semantic and filler tiers are unaffected either way -- they're always
+    n-space, whether from similar_candidates_for_native_frame's snapped
+    search (confirmed) or the caller's own candidates (unconfirmed)."""
+    return _generate_export_flat(candidates, mode, confirmed, answers, neighbour_count, max_rows, keyframes)
 
 
 def _generate_export_flat(candidates: list, mode: str, confirmed: Optional[dict],
-                           answers: Optional[list], neighbour_count: int, max_rows: int) -> list:
+                           answers: Optional[list], neighbour_count: int, max_rows: int,
+                           keyframes: bool = True) -> list:
     seen, rows = set(), []
 
     def add(video_id, n) -> bool:
@@ -137,17 +178,33 @@ def _generate_export_flat(candidates: list, mode: str, confirmed: Optional[dict]
         rows.append({"video_id": video_id, "n": int(n)})
         return True
 
+    def add_frame(video_id, frame_idx) -> bool:
+        key = ("frame", video_id, int(frame_idx))
+        if key in seen or len(rows) >= max_rows:
+            return False
+        seen.add(key)
+        rows.append({"video_id": video_id, "frame_idx": int(frame_idx)})
+        return True
+
     if mode == "confirmed":
         if confirmed is None:
             raise ValueError("mode='confirmed' requires a confirmed frame")
-        add(confirmed["video_id"], confirmed["n"])
-        for n in nearest_keyframes_by_time(confirmed["video_id"], confirmed["n"], neighbour_count):
-            add(confirmed["video_id"], n)
+        if keyframes:
+            add(confirmed["video_id"], confirmed["n"])
+            for n in nearest_keyframes_by_time(confirmed["video_id"], confirmed["n"], neighbour_count):
+                add(confirmed["video_id"], n)
+        else:
+            add_frame(confirmed["video_id"], confirmed["frame_idx"])
+            for f in _event_neighbour_stream(confirmed["video_id"], confirmed["frame_idx"], neighbour_count):
+                add_frame(confirmed["video_id"], f)
     else:
         if not answers:
             raise ValueError("mode='unconfirmed' requires at least one answer frame")
         for a in answers:
-            add(a["video_id"], a["n"])
+            if keyframes:
+                add(a["video_id"], a["n"])
+            else:
+                add_frame(a["video_id"], a["frame_idx"])
 
     # Similar-semantic tier, ranked order, exact-repeat dedup only.
     ranked = sorted(candidates, key=_confidence, reverse=True)
@@ -296,7 +353,10 @@ def rows_to_csv_text(query_type: str, rows: list, answer: str = "") -> str:
             # here.
             fields = [video_id, *(str(f) for f in row["frame_idxs"])]
         else:
-            frame_idx = frame_idx_for_n(video_id, row["n"])
+            # A native (Keyframes-unchecked) row already carries its own
+            # frame_idx directly, no n -> frame_idx lookup needed -- same
+            # reasoning as TRAKE rows above, just one row at a time here.
+            frame_idx = row["frame_idx"] if "frame_idx" in row else frame_idx_for_n(video_id, row["n"])
             if frame_idx is None:
                 continue
             fields = [video_id, str(frame_idx)]

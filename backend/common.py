@@ -202,6 +202,21 @@ def n_for_frame_idx(video_id: str, frame_idx: int):
     return int(hit.iloc[0]["n"])
 
 
+def nearest_keyframe_n_for_frame_idx(video_id: str, frame_idx: int):
+    """Nearest keyframe n to a native frame_idx by |frame_idx - keyframe's
+    own frame_idx| -- unlike n_for_frame_idx, always returns *some*
+    keyframe (as long as the video has any indexed at all), not just an
+    exact match. Used to seed a visual-similarity search, or a "Keyframes"
+    checkbox re-check, from a raw native frame (Export tab, Keyframes
+    unchecked) that has no embedding/n of its own. Returns None only if
+    map-keyframes has no rows for video_id."""
+    mk = load_map_keyframes(video_id)
+    if mk is None or mk.empty or frame_idx is None:
+        return None
+    idx = (mk["frame_idx"] - int(frame_idx)).abs().idxmin()
+    return int(mk.loc[idx, "n"])
+
+
 def native_frame_range_for_video(video_id: str):
     """(lo, hi) bound on real frame_idx values for video_id, used by TRAKE
     row generation to keep interpolated/hedge frame numbers in range. Only

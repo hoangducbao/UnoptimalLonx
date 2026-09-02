@@ -77,12 +77,39 @@ duplicate of an already-placed row never helps, only wastes a slot).
 - **KIS/VQA** (`backend/export.py::_generate_export_flat`) — confirmed
   mode (a picked answer + its nearest keyframes by time as hedges) or
   unconfirmed mode (a curated ordered list of answer candidates), then a
-  similar-semantic tier (the query's own ranked results) and a filler
-  tier (nearest-by-time keyframes of each similar), until the row budget
-  is spent. The VQA answer text box is a plain typed field in both modes
-  — no LLM auto-fill, that was a planned later phase that isn't
-  happening; whatever's typed goes straight into the CSV's quoted answer
-  column.
+  similar-semantic tier (confirmed mode: a fresh visual search seeded by
+  the confirmed frame itself, `similar_candidates_for_frame`; unconfirmed
+  mode: the opener tab's own ranked results) and a filler tier
+  (nearest-by-time keyframes of each similar), until the row budget is
+  spent. The VQA answer text box is a plain typed field in both modes —
+  no LLM auto-fill, that was a planned later phase that isn't happening;
+  whatever's typed goes straight into the CSV's quoted answer column.
+
+  A **"Keyframes" checkbox** (next to "Confirmed") switches the answer
+  between an indexed keyframe (`{video_id, n}`, the above) and a raw
+  **native** frame (`{video_id, frame_idx}`) straight from video
+  playback, unchecked. Unchecked, the Neighbours/Similars preview grids
+  are replaced by a TRAKE-style curation panel — an inline `<video>` plus
+  an add button that captures whatever frame is currently playing;
+  confirmed mode caps it at one frame ("Switch to this frame" swaps it,
+  captioned by video_id), unconfirmed mode is a plain list of candidates
+  in the order added ("Cand 1", "Cand 2", ..., no temporal sort, unlike
+  TRAKE's events) — no Generate-rows/cache/merge step either way, the
+  curated list(s) go straight into `/api/export`. The Video ID/Frame ID/
+  Change row is dropped entirely in this mode (the curation panel's own
+  video is the only way to add a frame); VQA reuses that vacated topbar
+  slot for its answer text box instead, KIS just leaves it empty. Row
+  generation still runs the same tiers server-side with nothing to
+  preview: the confirmed/answers tier is built in frame_idx space via
+  TRAKE's own `_event_neighbour_stream` neighbour logic
+  (`generate_export(..., keyframes=False)`) instead of
+  `nearest_keyframes_by_time`, and confirmed mode's similar-semantic
+  search snaps to the nearest indexed keyframe first
+  (`similar_candidates_for_native_frame`), since a raw frame has no
+  SigLIP2 embedding of its own to search from. A frame captured live from
+  a video-playback dialog (no keyframe `n` at all) opens KIS/VQA with
+  Keyframes unchecked by default; re-checking it snaps whatever's curated
+  to its nearest keyframe (`/api/export/nearest-keyframe`).
 - **TRAKE** — no confirmed/unconfirmed distinction at all. A
   **curate → cache → merge** flow instead, entirely inside the Export
   tab's TRAKE panel:
@@ -118,7 +145,11 @@ duplicate of an already-placed row never helps, only wastes a slot).
 
   Not limited to an actual TRAKE search: any signal's result card, a
   Neighbours/Similars preview pick (KIS/VQA), or a frame captured live
-  from a video-playback dialog can seed a curation session's first event.
+  from a video-playback dialog can seed a curation session's first event
+  — and a video-playback frame is no longer TRAKE-only either: it opens
+  with all three query types available (KIS/VQA default to Keyframes
+  unchecked, per above), seeding both the TRAKE and native KIS/VQA
+  curation panels with the same frame up front.
 
 ## Frontend caching
 

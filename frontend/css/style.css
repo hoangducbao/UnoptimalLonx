@@ -406,8 +406,13 @@ button {
     flex-wrap: wrap;
     margin-bottom: 0.75rem;
 }
-.trake-toprow input#trake-load-video { flex: 0 0 170px; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
-.trake-toprow #trake-load-btn { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+/* Shared by TRAKE's own curation panel and KIS/VQA's native
+   (Keyframes-unchecked) one -- same Video ID/Load-switch row, different
+   ids (#trake-load-video/#native-load-video etc.) so both panels' DOM can
+   coexist (only one visible at a time, see export-ui.js's
+   renderTypeVisibility). */
+.trake-toprow .curate-load-video { flex: 0 0 170px; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+.trake-toprow .curate-load-btn { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 .trake-toprow .playback-timer { margin: 0; }
 .trake-toprow .playback-speed { margin: 0; }
 
@@ -435,11 +440,15 @@ button {
 
 .export-actions { display: flex; gap: 0.5rem; }
 
-/* Video ID/Frame ID/Change -- share the topbar's remaining space and
-   collapse to nothing (display:none, set in export-ui.js) while TRAKE is
-   selected -- TRAKE has no single "current export frame" to retarget with
-   Video ID/Frame ID. Query# (also in .export-topbar, see above) stays
-   visible for every type. */
+/* Video ID/Frame ID/Change -- share the topbar's remaining space. Hidden
+   (display:none, set in export-ui.js) for KIS/VQA native mode (Keyframes
+   unchecked) -- there's no keyframe n to retarget with Video ID/Frame ID,
+   the curation panel's own video is the only way to add a frame there --
+   except for VQA, which reuses this same slot for the answer text box
+   instead (#exp-answer-text, normally inside .export-answer-area, gets
+   moved in here -- see renderTypeVisibility). TRAKE repurposes the row
+   rather than hiding it (Frame ID becomes "add a raw event"). Query#
+   (also in .export-topbar, see above) stays visible for every type. */
 .export-change-fields { display: flex; gap: 0.5rem; flex: 1 1 260px; min-width: 0; }
 .export-change-fields input { flex: 1; min-width: 0; }
 
