@@ -11,6 +11,12 @@
     --accent: #ff4b4b;
     --accent-soft: #ffe8e8;
     --radius: 6px;
+    /* Display preferences -- the values here are only the pre-JS fallback;
+       settings.js::applySettings() overwrites all three on :root from the
+       saved settings (see its TILE_SIZES table) on every page load. */
+    --hover-zoom: 2.2;
+    --grid-columns: 5;
+    --preview-columns: 4;
 }
 
 * { box-sizing: border-box; }
@@ -167,7 +173,7 @@ button {
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(var(--grid-columns), 1fr);
     gap: 0.75rem 1rem;
     margin-bottom: 1rem;
 }
@@ -186,7 +192,7 @@ button {
 }
 .thumb-wrap:hover { z-index: 100; }
 .thumb-wrap:hover img {
-    transform: scale(2.2);
+    transform: scale(var(--hover-zoom));
     box-shadow: 0 12px 32px rgba(0,0,0,0.45);
     position: relative;
 }
@@ -321,7 +327,7 @@ button {
 }
 .export-preview-section { flex: 1 1 320px; min-width: 0; }
 .export-preview-header { margin-bottom: 0.4rem; }
-.export-preview-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.5rem; }
+.export-preview-grid { grid-template-columns: repeat(var(--preview-columns), 1fr); gap: 0.5rem; }
 .export-preview-grid .thumb-cell { position: relative; font-size: 0.72rem; }
 .export-preview-grid .thumb-caption { font-size: 0.72rem; }
 
@@ -538,3 +544,44 @@ button {
     border-radius: 3px;
     line-height: 18px;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Settings dialog (⚙ in the sidebar's signal rows -- see dialogs.js's     */
+/* openSettingsDialog). Row = label column + the control itself, so the    */
+/* zoom slider and the size segmented control line up under each other.    */
+/* ---------------------------------------------------------------------- */
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin: 0.75rem 0;
+}
+.settings-row > label {
+    flex: 0 0 150px;
+    margin: 0;
+    font-size: 0.9rem;
+}
+.settings-row input[type="range"] { flex: 1 1 auto; }
+.settings-value { flex: 0 0 42px; font-family: monospace; font-size: 0.9rem; text-align: right; }
+.settings-row .segmented { flex: 0 0 auto; }
+
+/* Top-K/Top-V/Top-G mirrors of the sidebar boxes -- however many the current
+   signal offers (Top-V/Top-G are per-signal), side by side. */
+.settings-tops { display: flex; gap: 0.75rem; }
+.settings-top-box { display: flex; align-items: center; gap: 0.4rem; }
+.settings-top-box > label { flex: none; margin: 0; font-size: 0.85rem; color: var(--text-muted); }
+.settings-top-box input[type="number"] {
+    width: 80px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.settings-checks { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+.settings-check { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-size: 0.9rem; cursor: pointer; }
+.settings-check input { margin: 0; }
+.settings-actions { display: flex; gap: 0.5rem; }
+.settings-actions .btn-primary { margin-left: auto; }

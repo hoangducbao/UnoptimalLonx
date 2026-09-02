@@ -8,6 +8,7 @@ import { searchMixed } from "../api.js";
 import { renderGrid } from "../render.js";
 import { signalSelectHtml } from "../signal-select.js";
 import { mixedQueryState, resetExportCandidates, scopeFilters, MIXED_QUERY_SIGNALS } from "../state.js";
+import { settings } from "../settings.js";
 
 const mixedSection = document.getElementById("mixed-query-section");
 const standardSection = document.getElementById("standard-query-section");
@@ -92,7 +93,7 @@ export function unmount() {
 }
 
 function groupMode() {
-    return document.getElementById("group-by-video").checked ? "video" : null;
+    return settings.groupByVideo ? "video" : null;
 }
 
 export async function run(resultsEl, statusEl) {

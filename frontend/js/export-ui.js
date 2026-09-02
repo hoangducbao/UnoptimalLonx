@@ -55,9 +55,16 @@
 import { exportCsv, getExportFrame, getExportNearestKeyframe, getExportNeighbors, getExportSimilar, getPlayback, getTrakeRows, writeTrakeCsv } from "./api.js";
 import { fmtTime } from "./format.js";
 import { applyVideoPrefs, bindSpeedShortcut, captureVideoThumbnail } from "./video-controls.js";
+import { tile } from "./settings.js";
 
 const NEIGHBOUR_COUNT_EXPORT = 10; // fixed row-generation window, independent of preview expand state
-const PREVIEW_PAGE = 12; // 3x4 grid per preview section (export-preview-grid is 4 columns wide)
+
+// Initial count and "Show N more" step per preview section -- three rows of
+// whatever the tile-size setting makes .export-preview-grid wide (settings.js's
+// TILE_SIZES.previewPage/previewColumns), read fresh rather than captured at
+// import so a size change in the search tab reaches this one (see settings.js's
+// storage listener).
+const previewPage = () => tile().previewPage;
 
 function freshState(trigger) {
     const isFlat = trigger.kind === "flat";
@@ -84,10 +91,10 @@ function freshState(trigger) {
         answers: seed ? [seed] : [], // unconfirmed-mode ordered list, pre-seeded per spec ("at least 1 frame")
         frameInfo: new Map(),        // "vid|n" -> {frame_idx, thumbnail_url} | "pending"
         neighbourFrames: null,       // cached /api/export/neighbors result (grows with `neighboursShown`)
-        neighboursShown: PREVIEW_PAGE,
+        neighboursShown: previewPage(),
         similarFrames: null,         // confirmed mode: cached /api/export/similar result, keyed to similarFramesKey below
         similarFramesKey: null,      // frameKey(answerFrame) similarFrames was fetched for -- refetch when the confirmed frame changes
-        similarsShown: PREVIEW_PAGE,
+        similarsShown: previewPage(),
         dragIndex: null,
         // TRAKE: no confirmed/unconfirmed distinction any more -- one
         // per-video curation session (video + ordered event list, each a
@@ -237,12 +244,12 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
           <div class="export-preview-section">
             <div class="export-preview-header"><b>Neighbours</b> <span class="thumb-caption muted">(nearest keyframes by time)</span></div>
             <div class="grid export-preview-grid" id="exp-nbr-grid"></div>
-            <button class="btn" id="exp-nbr-more">Show 12 more</button>
+            <button class="btn" id="exp-nbr-more">Show ${previewPage()} more</button>
           </div>
           <div class="export-preview-section">
             <div class="export-preview-header"><b>Similars</b> <span class="thumb-caption muted" id="exp-sim-caption">(this query's ranked results)</span></div>
             <div class="grid export-preview-grid" id="exp-sim-grid"></div>
-            <button class="btn" id="exp-sim-more">Show 12 more</button>
+            <button class="btn" id="exp-sim-more">Show ${previewPage()} more</button>
           </div>
         </div>`;
     container.innerHTML = "";
@@ -456,6 +463,13 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
 
         const addable = !s.confirmed;
         const replaceable = s.confirmed;
+
+        // Re-labelled every render, not just at build time: the tile-size
+        // setting these counts come from can change in the search tab while
+        // this one is open (settings.js's storage listener), and the buttons'
+        // own handlers already step by the current previewPage().
+        el("#exp-nbr-more").textContent = `Show ${previewPage()} more`;
+        el("#exp-sim-more").textContent = `Show ${previewPage()} more`;
 
         // Neighbours -- nearest keyframes by time to the trigger frame.
         const nbrGrid = el("#exp-nbr-grid");
@@ -1080,8 +1094,8 @@ export function buildExportUI(container, trigger, { getCandidates, onDone }) {
             e.target.disabled = false;
         }
     };
-    el("#exp-nbr-more").onclick = () => { s.neighboursShown += PREVIEW_PAGE; renderPreview(); };
-    el("#exp-sim-more").onclick = () => { s.similarsShown += PREVIEW_PAGE; renderPreview(); };
+    el("#exp-nbr-more").onclick = () => { s.neighboursShown += previewPage(); renderPreview(); };
+    el("#exp-sim-more").onclick = () => { s.similarsShown += previewPage(); renderPreview(); };
     el("#exp-cancel").onclick = () => onDone("cancel");
 
     // Typed "Video ID" / "Frame ID" boxes + Change/Add event button --
