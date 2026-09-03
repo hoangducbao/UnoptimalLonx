@@ -31,6 +31,11 @@
     <div id="standard-query-section">
       <label for="query-text">Query</label>
       <textarea id="query-text" placeholder="e.g. một người đàn ông đang lái xe máy (or paste an image)"></textarea>
+      <!-- Full-width drag handle standing in for the browser's corner grip:
+           #query-text is resize:none and query-input.js drives its height from
+           pointer drags on this bar (a native grip is corner-only, CSS can't
+           widen it). -->
+      <div id="query-resize" title="Drag to resize"></div>
 
       <div class="image-query-preview" id="image-query-preview" style="display:none;">
         <img id="image-query-thumb" alt="pasted query image">
@@ -81,15 +86,15 @@
     <div class="scope-row">
       <div>
         <label for="top-k">Top-K</label>
-        <input type="number" id="top-k" value="100" min="1" max="200" step="5">
+        <input type="number" id="top-k" value="200" min="1" max="400" step="5">
       </div>
       <div id="top-v-wrap" style="display:none;">
         <label for="top-v">Top-V</label>
-        <input type="number" id="top-v" value="10" min="1" max="50" step="1">
+        <input type="number" id="top-v" value="15" min="1" max="50" step="1">
       </div>
       <div id="top-g-wrap" style="display:none;">
         <label for="top-g" title="Frames kept per video after per-video drill-down.">Top-G</label>
-        <input type="number" id="top-g" value="5" min="1" max="50" step="1">
+        <input type="number" id="top-g" value="10" min="1" max="50" step="1">
       </div>
     </div>
 

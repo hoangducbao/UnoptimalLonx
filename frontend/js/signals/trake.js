@@ -172,8 +172,8 @@ export async function run(resultsEl, statusEl) {
     }
     statusEl.innerHTML = "";
 
-    const topK = parseInt(document.getElementById("top-k").value, 10) || 100;
-    const topV = parseInt(document.getElementById("top-v").value, 10) || 10;
+    const topK = parseInt(document.getElementById("top-k").value, 10) || 200;
+    const topV = parseInt(document.getElementById("top-v").value, 10) || 15;
     const body = {
         context: trakeState.context.text.trim() ? trakeState.context : null,
         events: trakeState.events.map((e) => ({ text: e.text, signal: e.signal })),

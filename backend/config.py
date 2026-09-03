@@ -18,12 +18,26 @@ except Exception:
     pass
 
 FETCH_K = 100      # candidates pulled per leg, gives RRF a real pool to fuse
-DISPLAY_N = 100
+DISPLAY_N = 200
 RRF_K = 60
 NEIGHBOR_WINDOW = 7  # "show more" popup: +/- this many frames by frame id when the caller names no window of its own (the frontend always does -- it sizes the popup per its tile-size setting, frontend/js/settings.js)
-TOP_G_DEFAULT = 5   # Hierarchy Search: frames kept per video after drill-down (Top-G)
+TOP_G_DEFAULT = 10   # Hierarchy Search: frames kept per video after drill-down (Top-G)
 
 DATASET_MODE = os.getenv("DATASET_MODE", "AIC").upper()  # "AIC" or "ADL"
+
+# ---------------------------------------------------------------------------
+# Embedding profiles -- which SigLIP2 checkpoint (and so which vector
+# dimension, and which set of precomputed .npy files) this process runs on.
+# Chosen once from the R101_EMBED environment variable before anything
+# loads; there is deliberately no in-app switch. A profile costs ~2.9GB
+# (768) / ~5.5GB (1152) / ~9.4GB (1536) resident in model weights plus FAISS
+# indices, so holding several in one process would multiply a footprint this
+# project has already trimmed once on purpose (see ARCHITECTURE.md's Signals
+# table on the removed M-CLIP text tower). Run one process per profile on its
+# own port instead -- run_768.bat / run_1152.bat / run_1536.bat. They share
+# Elasticsearch, /media, the OD vocabulary and the metadata facets; only the
+# embedding legs differ. Three at once will not fit in 32GB; two will.
+# ---------------------------------------------------------------------------
 
 if Path("D:/hf_cache").exists():
     os.environ.setdefault("HF_HOME", "D:/hf_cache")
@@ -42,9 +56,6 @@ def _find_dir(names: list, fallback: str) -> Path:
                 dirs[:] = [d for d in dirs if not d.startswith(("L0", "L1", "L2", "v_"))]
     return Path(fallback)
 
-# ---------------------------------------------------------------------------
-# Embedding profiles -- which SigLIP2 checkpoint (768 or 1152)
-# ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _EXTRACTED = Path("D:/University/Summ26/AICDataExtracted")
 
@@ -70,6 +81,16 @@ _PROFILES = {
         summary_embed_dir=_EXTRACTED / "1152embed" / "1152summary",
         summary_chunked=True,
         index_sub="1152",
+    ),
+    "1536": dict(
+        dim=1536,
+        model_id="google/siglip2-giant-opt-patch16-384",
+        frame_glob=str(_EXTRACTED / "1536embed" / "1536keyframe" / "*.npy"),
+        asr_dir=_EXTRACTED / "1536embed" / "1536transcript",
+        caption_dir=_EXTRACTED / "1536embed" / "1536caption",
+        summary_embed_dir=_EXTRACTED / "1536embed" / "1536summary",
+        summary_chunked=True,
+        index_sub="1536",
     ),
 }
 if EMBED_PROFILE not in _PROFILES:
@@ -110,15 +131,15 @@ if DATASET_MODE == "ADL":
 else:
     # Default AIC dataset with dynamic fallback
     if IS_KAGGLE:
-        siglip_dir = _find_dir(["siglib_embed", "siglip_embed", "siglip2_embed", "1152keyframe"], str(_P["frame_glob"]))
+        siglip_dir = _find_dir(["1536keyframe", "1152keyframe", "siglib_embed", "siglip_embed", "siglip2_embed"], str(_P["frame_glob"]))
         FRAME_SIGLIP2_GLOB = os.getenv("FRAME_SIGLIP2_GLOB", str(siglip_dir / "*.npy"))
-        ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(["transcript_embed", "transcripts_embed", "1152transcript", "asr_embed"], str(_P["asr_dir"])))))
+        ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(["1536transcript", "1152transcript", "transcript_embed", "transcripts_embed", "asr_embed"], str(_P["asr_dir"])))))
         TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", str(_find_dir(["transcripts", "transcript"], "D:/University/Summ26/AICDataExtracted/transcripts"))))
         CAPTIONING_DIR = Path(os.getenv("CAPTIONING_DIR", str(_find_dir(["captions", "caption", "captioning"], "D:/University/Summ26/AICDataExtracted/captions"))))
-        SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_find_dir(["caption_embed", "captions_embed", "1152caption", "siglip_caption"], str(_P["caption_dir"])))))
+        SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_find_dir(["1536caption", "1152caption", "caption_embed", "captions_embed", "siglip_caption"], str(_P["caption_dir"])))))
         OCR_DIR = Path(os.getenv("OCR_DIR", str(_find_dir(["ocr"], "D:/University/Summ26/AICDataExtracted/ocr"))))
         SUMMARY_DIR = Path(os.getenv("SUMMARY_DIR", str(_find_dir(["summaries", "summary"], "D:/University/Summ26/AICDataExtracted/summaries"))))
-        SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_find_dir(["summary_embed", "summaries_embed", "1152summary"], "/kaggle/working/summary_embed"))))
+        SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_find_dir(["1536summary", "1152summary", "summary_embed", "summaries_embed"], "/kaggle/working/summary_embed"))))
         MAP_KEYFRAMES_DIR = Path(os.getenv("MAP_KEYFRAMES_DIR", str(_find_dir(["map-keyframes", "map_keyframes"], "D:/University/Summ26/AICData/map-keyframes"))))
         THUMBNAIL_ROOT = Path(os.getenv("THUMBNAIL_ROOT", str(_find_dir(["keyframes"], "D:/University/Summ26/AICData/keyframes"))))
         VIDEO_DIR = Path(os.getenv("VIDEO_DIR", str(_find_dir(["degarr", "videos", "video"], "D:/University/Summ26/AICData/video"))))

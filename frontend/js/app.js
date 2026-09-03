@@ -116,10 +116,10 @@ controlsEl.addEventListener("change", runCurrentSearch);
 selectSignal("Keyframe");
 initFacets(runCurrentSearch);
 
-// Which embedding profile the backend behind THIS tab loaded (768 vs 1152 --
-// see backend/config.py). The two run as separate processes on separate
-// ports and are otherwise pixel-identical, so without this badge it's only a
-// matter of time before a result gets credited to the wrong model. Also
+// Which embedding profile the backend behind THIS tab loaded (768, 1152 or
+// 1536 -- see backend/config.py). Each runs as its own process on its own
+// port and they are otherwise pixel-identical, so without this badge it's
+// only a matter of time before a result gets credited to the wrong model. Also
 // stamped into the tab title, for when the tab is too narrow to read.
 getProfile().then(({ profile, dim, model_id }) => {
     const el = document.getElementById("profile-badge");

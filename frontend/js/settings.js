@@ -23,8 +23,8 @@ export const SETTINGS_DEFAULTS = {
 // (Top-G's default is per tile size, below). Not persisted -- these stay
 // session state on the sidebar inputs, same as before; the dialog just offers
 // a second way to set them and a way back to these numbers.
-export const TOP_K_DEFAULT = 100;
-export const TOP_V_DEFAULT = 10;
+export const TOP_K_DEFAULT = 200;
+export const TOP_V_DEFAULT = 15;
 
 export const HOVER_ZOOM_MIN = 1.0;
 export const HOVER_ZOOM_MAX = 3.0;
@@ -42,17 +42,17 @@ export const TILE_SIZES = {
     small: {
         label: "Small",
         columns: 6, neighborsBefore: 8, neighborsAfter: 9, neighborStep: 12,
-        previewColumns: 5, previewPage: 15, topG: 6, hierExpand: 6,
+        previewColumns: 5, previewPage: 15, topG: 12, hierExpand: 6,
     },
     medium: {
         label: "Medium",
         columns: 5, neighborsBefore: 7, neighborsAfter: 7, neighborStep: 10,
-        previewColumns: 4, previewPage: 12, topG: 5, hierExpand: 5,
+        previewColumns: 4, previewPage: 12, topG: 10, hierExpand: 5,
     },
     large: {
         label: "Large",
         columns: 4, neighborsBefore: 5, neighborsAfter: 6, neighborStep: 8,
-        previewColumns: 3, previewPage: 12, topG: 4, hierExpand: 4,
+        previewColumns: 3, previewPage: 12, topG: 8, hierExpand: 4,
     },
 };
 

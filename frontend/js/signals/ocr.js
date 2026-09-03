@@ -24,7 +24,7 @@ export async function run(resultsEl, statusEl) {
     }
     statusEl.innerHTML = "";
 
-    const topK = parseInt(document.getElementById("top-k").value, 10) || 100;
+    const topK = parseInt(document.getElementById("top-k").value, 10) || 200;
     const body = {
         query: image_id ? null : query,
         image_id,

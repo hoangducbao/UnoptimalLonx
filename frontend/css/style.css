@@ -102,6 +102,44 @@ html, body {
 
 .sidebar textarea { min-height: 64px; }
 
+/* Query box resize: the native grip is a fixed ~16px corner square that no
+   CSS can widen, so #query-text drops it and #query-resize below is the
+   handle instead -- a full-width bar flush against the textarea's bottom
+   edge, dragged by query-input.js. */
+#query-text {
+    resize: none;
+    display: block;   /* kills the inline baseline gap under the box, so the bar sits flush */
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+#query-resize {
+    height: 10px;
+    margin-top: -1px;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    background: var(--bg-sidebar);
+    cursor: ns-resize;
+    touch-action: none;   /* drags on touch move the box, not the sidebar */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* The grip line itself, drawn rather than shipped as an asset. */
+#query-resize::after {
+    content: "";
+    width: 22px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--text-muted);
+    opacity: 0.45;
+}
+
+#query-resize:hover::after, #query-resize.dragging::after { opacity: 0.8; }
+#query-resize.dragging { background: var(--accent-soft); }
+
 .scope-row { display: flex; gap: 0.5rem; }
 .scope-row > div { flex: 1; }
 
@@ -176,6 +214,7 @@ button {
 .profile-badge:empty { display: none; }
 .profile-badge[data-profile="768"] { border-color: #9ca3af; background: #f3f4f6; color: #4b5563; }
 .profile-badge[data-profile="1152"] { border-color: #6366f1; background: #eef2ff; color: #4338ca; }
+.profile-badge[data-profile="1536"] { border-color: #10b981; background: #ecfdf5; color: #047857; }
 .main h2 { margin: 1.5rem 0 0.75rem; }
 
 .status-banner {
