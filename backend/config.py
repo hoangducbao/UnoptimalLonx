@@ -131,15 +131,31 @@ if DATASET_MODE == "ADL":
 else:
     # Default AIC dataset with dynamic fallback
     if IS_KAGGLE:
-        siglip_dir = _find_dir(["1536keyframe", "1152keyframe", "siglib_embed", "siglip_embed", "siglip2_embed"], str(_P["frame_glob"]))
+        if EMBED_PROFILE == "1536":
+            siglip_names = ["1536keyframe", "keyframe_1536"]
+            asr_names = ["1536transcript", "transcript_1536"]
+            caption_names = ["1536caption", "caption_1536"]
+            summary_names = ["1536summary", "summary_1536"]
+        elif EMBED_PROFILE == "1152":
+            siglip_names = ["1152keyframe", "keyframe_1152"]
+            asr_names = ["1152transcript", "transcript_1152"]
+            caption_names = ["1152caption", "caption_1152"]
+            summary_names = ["1152summary", "summary_1152"]
+        else:
+            siglip_names = ["siglib_embed", "siglip_embed", "siglip2_embed"]
+            asr_names = ["transcript_embed", "transcripts_embed", "asr_embed"]
+            caption_names = ["caption_embed", "captions_embed", "siglip_caption"]
+            summary_names = ["summary_embed", "summaries_embed"]
+
+        siglip_dir = _find_dir(siglip_names, str(_P["frame_glob"]))
         FRAME_SIGLIP2_GLOB = os.getenv("FRAME_SIGLIP2_GLOB", str(siglip_dir / "*.npy"))
-        ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(["1536transcript", "1152transcript", "transcript_embed", "transcripts_embed", "asr_embed"], str(_P["asr_dir"])))))
+        ASR_EMBED_DIR = Path(os.getenv("ASR_EMBED_DIR", str(_find_dir(asr_names, str(_P["asr_dir"])))))
         TRANSCRIPTS_DIR = Path(os.getenv("TRANSCRIPTS_DIR", str(_find_dir(["transcripts", "transcript"], "D:/University/Summ26/AICDataExtracted/transcripts"))))
         CAPTIONING_DIR = Path(os.getenv("CAPTIONING_DIR", str(_find_dir(["captions", "caption", "captioning"], "D:/University/Summ26/AICDataExtracted/captions"))))
-        SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_find_dir(["1536caption", "1152caption", "caption_embed", "captions_embed", "siglip_caption"], str(_P["caption_dir"])))))
+        SIGLIP_CAPTION_DIR = Path(os.getenv("SIGLIP_CAPTION_DIR", str(_find_dir(caption_names, str(_P["caption_dir"])))))
         OCR_DIR = Path(os.getenv("OCR_DIR", str(_find_dir(["ocr"], "D:/University/Summ26/AICDataExtracted/ocr"))))
         SUMMARY_DIR = Path(os.getenv("SUMMARY_DIR", str(_find_dir(["summaries", "summary"], "D:/University/Summ26/AICDataExtracted/summaries"))))
-        SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_find_dir(["1536summary", "1152summary", "summary_embed", "summaries_embed"], "/kaggle/working/summary_embed"))))
+        SUMMARY_EMBED_DIR = Path(os.getenv("SUMMARY_EMBED_DIR", str(_find_dir(summary_names, "/kaggle/working/summary_embed"))))
         MAP_KEYFRAMES_DIR = Path(os.getenv("MAP_KEYFRAMES_DIR", str(_find_dir(["map-keyframes", "map_keyframes"], "D:/University/Summ26/AICData/map-keyframes"))))
         THUMBNAIL_ROOT = Path(os.getenv("THUMBNAIL_ROOT", str(_find_dir(["keyframes"], "D:/University/Summ26/AICData/keyframes"))))
         VIDEO_DIR = Path(os.getenv("VIDEO_DIR", str(_find_dir(["degarr", "videos", "video"], "D:/University/Summ26/AICData/video"))))

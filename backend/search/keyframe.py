@@ -29,9 +29,8 @@ _FRAME_INDICES: dict = {}
 def build_frame_index(glob_pattern: str):
     npy_paths = sorted(glob_mod.glob(glob_pattern))
     if not npy_paths:
-        print(f"[Keyframe Warning] No .npy files matched: {glob_pattern}. Initializing empty index.")
-        dim = 768 if "siglip" in glob_pattern.lower() else 512
-        index = faiss.IndexFlatIP(dim)
+        print(f"[Keyframe Warning] No .npy files matched: {glob_pattern}. Initializing empty index (dim={config.EMBED_DIM}).")
+        index = faiss.IndexFlatIP(config.EMBED_DIM)
         result = (index, pd.DataFrame(columns=["video_id", "frame_id"]))
         _FRAME_INDICES[glob_pattern] = result
         return result
@@ -43,12 +42,21 @@ def build_frame_index(glob_pattern: str):
         vecs = np.load(npy_path).astype("float32")
         if vecs.ndim == 1:
             vecs = vecs.reshape(1, -1)
+        if vecs.shape[1] != config.EMBED_DIM:
+            continue
         for row_idx in range(len(vecs)):
             lookup_rows.append({"video_id": video_id, "frame_id": row_idx})
         all_vecs.append(vecs)
 
+    if not all_vecs:
+        print(f"[Keyframe Warning] No .npy files matched dimension {config.EMBED_DIM} for pattern: {glob_pattern}. Initializing empty index.")
+        index = faiss.IndexFlatIP(config.EMBED_DIM)
+        result = (index, pd.DataFrame(columns=["video_id", "frame_id"]))
+        _FRAME_INDICES[glob_pattern] = result
+        return result
+
     matrix = l2_normalize(np.vstack(all_vecs).astype("float32"))
-    index = faiss.IndexFlatIP(matrix.shape[1])
+    index = faiss.IndexFlatIP(config.EMBED_DIM)
     index.add(matrix)
     result = (index, pd.DataFrame(lookup_rows))
     _FRAME_INDICES[glob_pattern] = result
