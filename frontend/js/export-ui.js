@@ -168,12 +168,12 @@ function parseFrameIdInput(str) {
     return n > 0 ? n : null;
 }
 
-// AIC submission naming: query-p2-<#>-<type>.csv, matching the real
+// AIC submission naming: query-p3-<#>-<type>.csv, matching the real
 // submission/*.csv samples in the repo -- note VQA's type slug is "qa",
 // not "vqa".
 const TYPE_SLUG = { KIS: "kis", VQA: "qa", TRAKE: "trake" };
 function queryFilename(queryType, name) {
-    return `query-p2-${name}-${TYPE_SLUG[queryType]}`;
+    return `query-p3-${name}-${TYPE_SLUG[queryType]}`;
 }
 
 // Kicks off a fetch for `f`'s frame_idx if it isn't cached yet; callers

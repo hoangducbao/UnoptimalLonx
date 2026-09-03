@@ -106,7 +106,7 @@ export async function run(resultsEl, statusEl) {
     }
     statusEl.innerHTML = "";
 
-    const topK = parseInt(document.getElementById("top-k").value, 10) || 100;
+    const topK = parseInt(document.getElementById("top-k").value, 10) || 200;
     const body = {
         queries: active.map((q) => ({ text: q.text, signal: q.signal, weight: q.weight })),
         top_k: topK,

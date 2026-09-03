@@ -43,7 +43,7 @@ async function renderGroupFrames(vid, container) {
 
 async function redrill(vid, container) {
     const g = groupsCache.get(vid);
-    const topK = parseInt(document.getElementById("top-k").value, 10) || 100;
+    const topK = parseInt(document.getElementById("top-k").value, 10) || 200;
     const topG = (parseInt(document.getElementById("top-g").value, 10) || tile().topG) + (hierExtraG.get(vid) || 0);
     const data = await expandHierarchy({
         video_id: vid, step1_frames: g.step1_frames, top_g: topG, seed_n: g.seed_n, top_k: topK,
@@ -113,8 +113,8 @@ export async function run(resultsEl, statusEl) {
     }
     statusEl.innerHTML = "";
 
-    const topK = parseInt(document.getElementById("top-k").value, 10) || 100;
-    const topG = parseInt(document.getElementById("top-g").value, 10) || 5;
+    const topK = parseInt(document.getElementById("top-k").value, 10) || 200;
+    const topG = parseInt(document.getElementById("top-g").value, 10) || tile().topG;
     const body = { query: image_id ? null : query, image_id, top_k: topK, top_g: topG, ...scopeFilters() };
 
     resultsEl.innerHTML = `<div class="status-banner info">Searching…</div>`;

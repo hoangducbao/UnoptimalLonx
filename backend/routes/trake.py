@@ -39,7 +39,7 @@ class TrakeSearchRequest(BaseModel):
     context: Optional[TrakeContext] = None
     events: List[TrakeEvent]
     top_k: int = config.DISPLAY_N
-    top_v: int = 10
+    top_v: int = 15
     video_filter: str = ""
     lot_filter: str = ""
     exclude_lot: bool = False
