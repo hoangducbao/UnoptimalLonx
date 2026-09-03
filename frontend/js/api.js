@@ -29,6 +29,13 @@ export const expandHierarchy = (body) => postJson("/api/hierarchy/expand", body)
 export const getFacets = () => jsonFetch("/api/facets");
 export const getProfile = () => jsonFetch("/api/profile");
 
+// Backend-side search settings (query chunking). Separate from settings.js's
+// localStorage preferences on purpose: this one changes what a search
+// returns and is applied inside the backend process, so it can't be a
+// per-browser value -- see backend/main.py's /api/settings.
+export const getSearchSettings = () => jsonFetch("/api/settings");
+export const setSearchSettings = (body) => postJson("/api/settings", body);
+
 // before/after are the totals wanted on each side of centerN (base window
 // per tile size + however far the popup has been expanded), not deltas.
 export function getNeighbors(videoId, centerN, before, after) {

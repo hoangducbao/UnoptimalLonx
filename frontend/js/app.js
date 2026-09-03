@@ -4,12 +4,12 @@
 // dispatch. Only Keyframe is wired in Phase 1 -- later phases register
 // more entries in SIGNALS and enable their sidebar buttons.
 
-import { getProfile } from "./api.js";
+import { getProfile, getSearchSettings } from "./api.js";
 import { resetExportCandidates, state } from "./state.js";
 import { setOnSubmit } from "./query-input.js";
 import { initFacets } from "./facets.js";
 import { openSettingsDialog } from "./dialogs.js";
-import { tile } from "./settings.js";
+import { setQueryChunkCache, tile } from "./settings.js";
 import * as keyframe from "./signals/keyframe.js";
 import * as asr from "./signals/asr.js";
 import * as caption from "./signals/caption.js";
@@ -65,8 +65,8 @@ document.querySelectorAll(".signal-btn[data-signal]").forEach((btn) => {
 });
 
 // ⚙ sits in the same icon row but isn't a signal -- it opens the settings
-// dialog (hover zoom, tile size, result counts, grouping) instead of
-// switching modes. Everything in there can change what a search returns or
+// dialog (hover zoom, tile size, result counts, grouping, long-query
+// chunking) instead of switching modes. Everything in there can change what a search returns or
 // how it's grouped, so a Save just re-runs the current one; the dialog
 // itself writes any changed Top-K/V/G back into the sidebar boxes.
 document.getElementById("top-g").value = tile().topG; // Top-G's default is a property of the tile size
@@ -121,6 +121,12 @@ initFacets(runCurrentSearch);
 // port and they are otherwise pixel-identical, so without this badge it's
 // only a matter of time before a result gets credited to the wrong model. Also
 // stamped into the tab title, for when the tab is too narrow to read.
+// Long-query chunking is backend state (backend/models.py), so seed the
+// cached copy once at load -- purely so the settings dialog's first paint
+// shows the mode actually in force; the dialog re-reads it on open anyway.
+getSearchSettings().then(({ query_chunk_strategy }) => setQueryChunkCache(query_chunk_strategy))
+    .catch(() => { /* the dialog retries on open */ });
+
 getProfile().then(({ profile, dim, model_id }) => {
     const el = document.getElementById("profile-badge");
     el.textContent = `${profile}d`;

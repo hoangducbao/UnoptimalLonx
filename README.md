@@ -306,6 +306,19 @@ Elasticsearch, and no public port for a browser to reach.
    `torch.cuda.is_available()`, no code change needed, and it meaningfully
    speeds up SigLIP2 inference over CPU-only.
 
+### Long queries
+
+SigLIP2 reads at most 64 tokens of text. A longer query is split into
+sentence-aligned chunks rather than truncated; **⚙ → Long-query chunking**
+picks what happens to them — *Per chunk* (default, each result keeps its
+best-matching chunk), *Average* (one averaged query vector), or *Truncate*
+(the old first-64-tokens behaviour). See
+[ARCHITECTURE.md](ARCHITECTURE.md#long-queries).
+
+Unlike everything else in that dialog this one is a **backend** setting, so
+it applies to every tab on that port and resets to *Per chunk* when the
+process restarts. Each profile's process keeps its own.
+
 ## Verifying it's working
 
 Once you're on `/app/`:

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from .. import config
 from ..common import parse_lot_range, thumbnail_url
-from ..models import siglip2_truncation_warning
+from ..models import get_query_chunk_strategy, siglip2_long_query_tokens
 from ..search import trake as trake_mod
 
 router = APIRouter()
@@ -70,17 +70,19 @@ def search_trake(body: TrakeSearchRequest):
     # fuzzy-only), so they're exempt -- every other signal option here
     # (Keyframe/ASR/Caption/Mixed, plus the context row's fixed Summary)
     # always runs a SigLIP2 leg internally, via trake_search_event().
-    truncated_labels = []
-    if ctx_text and siglip2_truncation_warning(ctx_text):
-        truncated_labels.append("context")
+    long_labels = []
+    ctx_tokens = siglip2_long_query_tokens(ctx_text) if ctx_text else None
+    if ctx_tokens:
+        long_labels.append(f"context ({ctx_tokens} tokens)")
     for i, ev in enumerate(body.events):
-        if ev.signal != "OCR" and ev.text.strip() and siglip2_truncation_warning(ev.text):
-            truncated_labels.append(f"event {i + 1}")
+        n_tokens = None if ev.signal == "OCR" else siglip2_long_query_tokens(ev.text)
+        if n_tokens:
+            long_labels.append(f"event {i + 1} ({n_tokens} tokens)")
     trunc_warning = None
-    if truncated_labels:
+    if long_labels:
         trunc_warning = (
-            f"{', '.join(truncated_labels)} too long for SigLIP2's embedding legs -- "
-            f"only the first ~64 tokens of each were used (fuzzy legs unaffected)."
+            f"{', '.join(long_labels)} over the 64-token window -- "
+            f"'{get_query_chunk_strategy()}'."
         )
 
     def run_event(text, signal):

@@ -93,6 +93,43 @@ export function tile() {
     return TILE_SIZES[settings.tileSize] || TILE_SIZES.medium;
 }
 
+// ---------------------------------------------------------------------------
+// Query chunking -- the one setting in this dialog that does NOT live here.
+// SigLIP2's text tower reads at most 64 tokens, so a longer query has to be
+// split; the strategy decides what happens to the pieces (backend/models.py).
+// It's backend state, not a browser preference: the splitting and the
+// embedding both happen in the backend process, and two tabs on the same port
+// share one value. So this module only carries the labels and a cached copy
+// of what the backend last reported -- the dialog re-reads /api/settings on
+// open rather than trusting the cache.
+// ---------------------------------------------------------------------------
+
+export const QUERY_CHUNK_LABELS = {
+    truncate: {
+        label: "Truncate",
+        title: "Keep only the first 64 tokens of the query and drop the rest. What the app did before chunking existed.",
+    },
+    mean_chunks: {
+        label: "Average",
+        title: "Split into sentence-aligned chunks, embed each, and search with their average. A soft AND: a result has to look somewhat like the whole query.",
+    },
+    chunks_separate: {
+        label: "Per chunk",
+        title: "Split into sentence-aligned chunks, search with each one, and RRF-fuse the rankings. A result is rewarded for ranking well against several chunks. Scores shown are RRF scores, not similarities.",
+    },
+};
+
+export const QUERY_CHUNK_DEFAULT = "chunks_separate";
+
+// Last value the backend reported, so the dialog has something to draw
+// before its own fetch resolves. Never written to localStorage.
+export const queryChunk = { strategy: QUERY_CHUNK_DEFAULT };
+
+export function setQueryChunkCache(strategy) {
+    if (QUERY_CHUNK_LABELS[strategy]) queryChunk.strategy = strategy;
+    return queryChunk.strategy;
+}
+
 // How the settings dialog should present the one shared group-by toggle for
 // the signal that's currently mounted -- Hierarchy/TRAKE don't offer it at
 // all, and Summary relabels it (it groups by collection, not video: one

@@ -12,10 +12,10 @@ import pandas as pd
 from cachetools import TTLCache
 
 from .. import config
-from ..common import l2_normalize, query_hash, video_id_from_filename
+from ..common import faiss_search_pooled, l2_normalize, query_hash, video_id_from_filename
 from ..es_client import get_es_client
 from ..es_indexing import ensure_summary_fuzzy_index
-from ..models import encode_text_siglip2, is_image_query, siglip2_query_vec
+from ..models import encode_text_siglip2, is_image_query, siglip2_query_mat
 
 _index = None
 _meta: pd.DataFrame = None
@@ -120,11 +120,16 @@ def search_siglip_summary(query, k: int = config.FETCH_K) -> pd.DataFrame:
     if cache_key in _siglip_cache:
         return _siglip_cache[cache_key]
     index, meta = _get_index()
-    qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
-    n = min(k * _CHUNK_OVERFETCH if config.SUMMARY_CHUNKED else k, index.ntotal)
-    scores, ids = index.search(qvec, n)
+    # Two independent chunkings meet here and must not be confused: the
+    # corpus rows are chunks of a *summary* (config.SUMMARY_CHUNKED, built
+    # upstream), while the query matrix may hold chunks of a long *query*
+    # (models.py). faiss_search_pooled RRF-fuses the second; the
+    # drop_duplicates below max-pools the first. Both leave the rows in
+    # descending score order, which is what keep="first" relies on.
+    n = k * _CHUNK_OVERFETCH if config.SUMMARY_CHUNKED else k
+    ids, scores = faiss_search_pooled(index, siglip2_query_mat(query), n, per_vec_k=n)
     rows = []
-    for gid, score in zip(ids[0], scores[0]):
+    for gid, score in zip(ids, scores):
         if gid == -1:
             continue
         row = meta.iloc[int(gid)]

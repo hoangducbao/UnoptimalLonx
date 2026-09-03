@@ -11,10 +11,10 @@ import pandas as pd
 from cachetools import TTLCache
 
 from .. import config
-from ..common import keyframe_timestamp, l2_normalize, nearest_keyframe_n_by_time, query_hash, video_id_from_filename
+from ..common import faiss_search_pooled, keyframe_timestamp, l2_normalize, nearest_keyframe_n_by_time, query_hash, video_id_from_filename
 from ..es_client import get_es_client
 from ..es_indexing import ensure_asr_fuzzy_index
-from ..models import is_image_query, siglip2_query_vec
+from ..models import is_image_query, siglip2_query_mat
 
 _index = None
 _meta: pd.DataFrame = None
@@ -87,11 +87,9 @@ def search_siglip_asr(query, k: int = config.FETCH_K) -> pd.DataFrame:
     if cache_key in _siglip_cache:
         return _siglip_cache[cache_key]
     index, meta = _get_index()
-    qvec = l2_normalize(siglip2_query_vec(query).reshape(1, -1))
-    n = min(k, index.ntotal)
-    scores, ids = index.search(qvec, n)
+    ids, scores = faiss_search_pooled(index, siglip2_query_mat(query), k)
     rows = []
-    for rank, (gid, score) in enumerate(zip(ids[0], scores[0]), start=1):
+    for rank, (gid, score) in enumerate(zip(ids, scores), start=1):
         if gid == -1:
             continue
         row = meta.iloc[int(gid)]

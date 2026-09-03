@@ -6,7 +6,7 @@
 // marker-bar playback and the Mixed change-weights dialog land in their
 // own phases, same file.
 
-import { getNeighbors, getPlayback } from "./api.js";
+import { getNeighbors, getPlayback, getSearchSettings, setSearchSettings } from "./api.js";
 import { fmtTime } from "./format.js";
 // export-dialog.js now just opens the Export CSV tab (frontend/export.html,
 // see its own header) rather than a modal built from openDialog() here --
@@ -18,6 +18,7 @@ import {
 } from "./state.js";
 import {
     groupByUi, HOVER_ZOOM_MAX, HOVER_ZOOM_MIN, HOVER_ZOOM_STEP,
+    QUERY_CHUNK_DEFAULT, QUERY_CHUNK_LABELS, queryChunk, setQueryChunkCache,
     SETTINGS_DEFAULTS, saveSettings, settings, tile, TILE_SIZE_KEYS,
     TILE_SIZES, TOP_K_DEFAULT, TOP_V_DEFAULT,
 } from "./settings.js";
@@ -279,13 +280,21 @@ export function openWeightsDialog(onSave) {
 // discard. `onSave` re-runs the current search -- every control here can
 // change what a search returns or how it's grouped.
 //
-// Two kinds of control share the form: the saved settings themselves
-// (settings.js), and mirrors of the sidebar's Top-K/Top-V/Top-G boxes, which
-// stay on the sidebar and stay session state -- the dialog reads them on
-// open and writes back only the ones actually changed, so it never clobbers
-// a hand-typed value it didn't touch.
+// Three kinds of control share the form: the saved settings themselves
+// (settings.js); mirrors of the sidebar's Top-K/Top-V/Top-G boxes, which stay
+// on the sidebar and stay session state -- the dialog reads them on open and
+// writes back only the ones actually changed, so it never clobbers a
+// hand-typed value it didn't touch; and one backend setting, query chunking,
+// which is fetched on open and POSTed on Save.
 export function openSettingsDialog(onSave) {
     const staged = { ...settings };
+    // Drawn from the cached value immediately, then corrected by the fetch
+    // below -- the dialog must never present a chunking mode the backend
+    // isn't actually using. `loadedChunk` is what the backend said, so Save
+    // can tell a real change from a no-op and skip the POST.
+    let stagedChunk = queryChunk.strategy;
+    let loadedChunk = queryChunk.strategy;
+    let chunkTouched = false;
 
     const TOP_BOXES = [
         { id: "top-k", label: "Top-K", title: "Candidates fetched per search." },
@@ -321,6 +330,13 @@ export function openSettingsDialog(onSave) {
               <label for="set-${b.id}" title="${b.title}">${b.label}</label>
               <input type="number" id="set-${b.id}" min="1" step="1">
             </div>`).join("")}
+          </div>
+        </div>
+        <div class="settings-row">
+          <label title="SigLIP2's text tower reads at most 64 tokens. A longer query has to be split -- this is what happens to the pieces. Applies to the backend behind this tab, not just this browser.">Long-query chunking</label>
+          <div class="segmented" id="set-chunk">
+            ${Object.entries(QUERY_CHUNK_LABELS).map(([key, v]) =>
+              `<button type="button" data-chunk="${key}" title="${v.title}">${v.label}</button>`).join("")}
           </div>
         </div>
         <div class="settings-row">
@@ -362,6 +378,9 @@ export function openSettingsDialog(onSave) {
         box.querySelectorAll("#set-tile button").forEach((btn) => {
             btn.classList.toggle("active", btn.dataset.tile === staged.tileSize);
         });
+        box.querySelectorAll("#set-chunk button").forEach((btn) => {
+            btn.classList.toggle("active", btn.dataset.chunk === stagedChunk);
+        });
         groupCheck.checked = staged.groupByVideo;
         fullTextCheck.checked = staged.showFullText;
         for (const b of TOP_BOXES) box.querySelector(`#set-${b.id}`).value = stagedTops[b.id];
@@ -372,6 +391,19 @@ export function openSettingsDialog(onSave) {
         staged.hoverZoom = Math.round(parseFloat(zoom.value) * 10) / 10;
         zoomValue.textContent = `${staged.hoverZoom.toFixed(1)}×`;
     };
+    // The live backend value, in case another tab (or a restart) moved it
+    // since this page loaded. Silent on failure: an unreachable /api/settings
+    // leaves the cached value showing rather than blocking the whole dialog.
+    getSearchSettings().then(({ query_chunk_strategy }) => {
+        loadedChunk = setQueryChunkCache(query_chunk_strategy);
+        // Don't stomp a choice already clicked while the fetch was in flight.
+        if (!chunkTouched) stagedChunk = loadedChunk;
+        renderStaged();
+    }).catch(() => { /* keep showing the cached value */ });
+
+    box.querySelectorAll("#set-chunk button").forEach((btn) => {
+        btn.onclick = () => { stagedChunk = btn.dataset.chunk; chunkTouched = true; renderStaged(); };
+    });
     box.querySelectorAll("#set-tile button").forEach((btn) => {
         btn.onclick = () => {
             staged.tileSize = btn.dataset.tile;
@@ -392,6 +424,8 @@ export function openSettingsDialog(onSave) {
 
     box.querySelector("#set-defaults").onclick = () => {
         Object.assign(staged, SETTINGS_DEFAULTS);
+        stagedChunk = QUERY_CHUNK_DEFAULT;
+        chunkTouched = true;
         const topDefaults = {
             "top-k": TOP_K_DEFAULT,
             "top-v": TOP_V_DEFAULT,
@@ -411,6 +445,17 @@ export function openSettingsDialog(onSave) {
             if (stagedTops[b.id] !== initialTops[b.id]) sidebarInput(b.id).value = stagedTops[b.id];
         }
         overlay.remove();
+        // The chunking mode is the one setting that has to reach the backend
+        // before the re-run, or the search would still use the old one. On a
+        // failed POST the cache is left alone and the search runs unchanged,
+        // rather than the UI claiming a mode the backend never took.
+        if (stagedChunk !== loadedChunk) {
+            setSearchSettings({ query_chunk_strategy: stagedChunk })
+                .then(({ query_chunk_strategy }) => setQueryChunkCache(query_chunk_strategy))
+                .catch(() => { /* backend kept its old mode; so do we */ })
+                .then(() => { if (onSave) onSave(); });
+            return;
+        }
         if (onSave) onSave();
     };
 }

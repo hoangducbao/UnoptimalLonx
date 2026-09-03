@@ -19,8 +19,8 @@ import pandas as pd
 from cachetools import TTLCache
 
 from .. import config
-from ..common import l2_normalize, query_hash, video_id_from_filename
-from ..models import siglip2_query_vec
+from ..common import faiss_search_pooled, l2_normalize, query_hash, video_id_from_filename
+from ..models import siglip2_query_mat
 
 # glob_pattern -> (faiss.IndexFlatIP, lookup_df) -- built once by build_frame_index()
 _FRAME_INDICES: dict = {}
@@ -56,12 +56,13 @@ def _get_frame_index(glob_pattern: str):
     return _FRAME_INDICES[glob_pattern]
 
 
-def _search_frame(index, lookup_df, qvec: np.ndarray, k: int) -> pd.DataFrame:
-    q = l2_normalize(qvec.reshape(1, -1))
-    n = min(k, index.ntotal)
-    scores, ids = index.search(q, n)
-    results = lookup_df.iloc[ids[0]].copy().reset_index(drop=True)
-    results["score"] = scores[0]
+def _search_frame(index, lookup_df, qmat: np.ndarray, k: int) -> pd.DataFrame:
+    """`qmat` is either one query vector (any shape faiss_search_pooled can
+    reshape, including the 1-D one search_siglip2_by_frame reconstructs) or
+    one row per chunk of a long query -- see backend/models.py."""
+    ids, scores = faiss_search_pooled(index, qmat, k)
+    results = lookup_df.iloc[ids].copy().reset_index(drop=True)
+    results["score"] = scores
     results["rank"] = np.arange(1, len(results) + 1)
     results["n"] = results["frame_id"] + 1
     return results[["rank", "score", "video_id", "frame_id", "n"]]
@@ -75,8 +76,7 @@ def search_siglip2_frame(query, k: int = config.FETCH_K) -> pd.DataFrame:
     if cache_key in _siglip2_cache:
         return _siglip2_cache[cache_key]
     index, lookup_df = _get_frame_index(config.FRAME_SIGLIP2_GLOB)
-    qvec = siglip2_query_vec(query)
-    result = _search_frame(index, lookup_df, qvec, k)
+    result = _search_frame(index, lookup_df, siglip2_query_mat(query), k)
     _siglip2_cache[cache_key] = result
     return result
 
