@@ -80,15 +80,82 @@ search modules rather than by reshaping the files:
   videos, while 1536 was embedded after that gap was filled.
 - **Summary** — the 1152 and 1536 summaries are embedded chunk-by-chunk
   (`chunks_separate`: 2501 chunks over 785 videos) rather than one vector
-  per summary, because SigLIP2's text tower only sees 64 tokens and a
-  summary runs well past that — the 768 profile silently truncated most of
-  every summary it embedded. So the index holds one row per chunk, and
+  per summary, because SigLIP2's text tower only sees 64 tokens (see
+  **Long queries** below) and a summary runs well past that — the 768
+  profile silently truncated most of every summary it embedded. So the index holds one row per chunk, and
   `search_siglip_summary()` overfetches and keeps each video's best-scoring
   chunk (a max-pool) to hand one row per video to `rrf_fuse_summary`, which
   keys on `video_id` alone. A hit's text is the chunk that scored, not the
   whole paragraph — so a fused card can show chunk text from the SigLIP2
   leg or the full summary from the fuzzy leg, whichever ranked the video
   first.
+
+## Long queries
+
+SigLIP2's text tower has a hard 64-token context — `Siglip2TextModel`'s
+`position_embedding` is `nn.Embedding(64, hidden)`, so there is no length to
+raise and no RoPE to extrapolate. Anything longer used to be truncated at
+encode time, with a warning as the only trace.
+
+`backend/models.py` now splits an over-window query instead. `chunk_text()`
+greedily packs whole sentences into pieces that each fit the window, falling
+back to greedy word packing when a single sentence is itself too long (the
+common case for a typed run-on query); no text is dropped. What happens to
+the pieces is the **Long-query chunking** setting in the ⚙ dialog:
+
+| Mode | Query vectors | Behaviour |
+|---|---|---|
+| Truncate | 1 | First 64 tokens only. The old behaviour, kept for comparison. |
+| Average | 1 | Every chunk embedded, L2-normalized, averaged. A soft AND — a result has to look somewhat like all of the query. |
+| Per chunk *(default)* | N | Each chunk gets its own ranked list; the lists are RRF-fused. A result is rewarded for ranking well against several chunks. |
+
+`AICPreprocess/summary-embed.ipynb` (where `chunk_text` comes from) max-pools
+its chunks, and on the corpus side that is right: a summary's chunks are
+unrelated topics, so a hit on one is a real hit. On the query side max-pooling
+would make added clauses behave like an OR — one strongly-matching clause
+could carry a result that ignored the rest — so the per-chunk lists are
+**RRF-fused** instead, `1/(RRF_K + rank)` summed over the chunks that
+retrieved a row, the same fusion the signals already use across their legs.
+That pays a row for placing well against several chunks at once, so the
+clauses act as corroborating evidence. Average reaches a similar conjunction
+in vector space rather than rank space: blunter (four clauses average into one
+point that may sit near none of them), but it keeps a real cosine score. Both
+beat Truncate, which just deletes the tail.
+
+Mechanically: `siglip2_query_mat()` returns an `(n_vectors, dim)` matrix —
+one row under Truncate/Average, one per chunk under Per chunk — and every
+SigLIP2 leg hands it to `common.py::faiss_search_pooled()`, which fuses across
+rows. A single-row matrix is passed through to `index.search()` untouched, so
+short queries (and image queries, and both single-vector modes) rank
+bit-for-bit as they did before any of this existed.
+
+Under Per chunk a leg's `score` is an RRF score (order `1/RRF_K`, so ~0.016
+and down) rather than a cosine similarity, and only its order is meaningful.
+Nothing downstream is affected — every signal's own RRF fuses on `rank`, not
+`score` — but the number on a card is a different scale for a long query than
+for a short one. Ties, which are common, break on best cosine and then on
+row id, so the ordering is deterministic.
+
+Two more consequences worth knowing:
+
+- The setting is **backend state**, not a browser preference (`GET`/`POST
+  /api/settings`) — the splitting and the embedding both happen in the
+  backend process, so two tabs on the same port share one value. The dialog
+  re-reads it on open rather than trusting its cache. Each profile's process
+  has its own, like the profile itself.
+- Every leg's TTL cache keys on `common.py::query_hash()`, which folds the
+  active strategy in, so a switch shows up on the next search rather than
+  being masked by the previous mode's cached ranking.
+
+Only the SigLIP2 legs are affected. The Elasticsearch legs (ASR fuzzy/exact,
+caption, OCR, summary fuzzy) always see the raw query string. A long query
+still raises a warning banner, kept to one line — the query's token count and
+the strategy handling it, e.g. `Query is 128 tokens, over SigLIP2's 64-token
+window -- 'chunks_separate'.` Mixed and TRAKE, which can send several texts at
+once, list only the ones over the window with their own counts (`#1 (128
+tokens)`, `event 2 (77 tokens)`). `siglip2_long_query_note()` builds the
+sentence; `siglip2_long_query_tokens()` is the count-only form those two
+routes use.
 
 ## Signals
 

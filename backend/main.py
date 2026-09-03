@@ -12,13 +12,15 @@ Then open http://localhost:8000/app/
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import config
 from .es_indexing import ensure_all_fuzzy_indices
-from .models import DEVICE, load_siglip2
+from .models import (DEVICE, QUERY_CHUNK_STRATEGIES, get_query_chunk_strategy,
+                     load_siglip2, set_query_chunk_strategy)
 from .routes import export, facets, hierarchy, neighbors, playback, query_image, search, trake
 from .search import asr as asr_mod
 from .search import caption as cap_mod
@@ -130,6 +132,35 @@ def profile():
     so two tabs on two ports can't be mistaken for each other."""
     return {"profile": config.EMBED_PROFILE, "dim": config.EMBED_DIM,
             "model_id": config.SIGLIP2_MODEL_ID}
+
+
+class SettingsRequest(BaseModel):
+    query_chunk_strategy: str
+
+
+def _settings_payload():
+    return {"query_chunk_strategy": get_query_chunk_strategy(),
+            "query_chunk_strategies": list(QUERY_CHUNK_STRATEGIES)}
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Backend-side search settings -- currently just how an over-64-token
+    query is split for the SigLIP2 embedding legs (backend/models.py). Unlike
+    the frontend's own preferences these can't live in localStorage: they
+    change what a search returns, and the splitting happens in this process.
+    The settings dialog reads this on open so it shows the live value rather
+    than whatever the last tab happened to set."""
+    return _settings_payload()
+
+
+@app.post("/api/settings")
+def post_settings(body: SettingsRequest):
+    try:
+        set_query_chunk_strategy(body.query_chunk_strategy)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _settings_payload()
 
 
 @app.get("/")
