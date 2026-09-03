@@ -22,12 +22,13 @@ TOP_G_DEFAULT = 10   # Hierarchy Search: frames kept per video after drill-down 
 # dimension, and which set of precomputed .npy files) this process runs on.
 # Chosen once from the R101_EMBED environment variable before anything
 # loads; there is deliberately no in-app switch. A profile costs ~2.9GB
-# (768) / ~5.5GB (1152) resident in model weights plus FAISS indices, so
-# holding both in one process would roughly double a footprint this project
-# has already trimmed once on purpose (see ARCHITECTURE.md's Signals table
-# on the removed M-CLIP text tower). Run two processes on two ports instead
-# -- run_768.bat / run_1152.bat. They share Elasticsearch, /media, the
-# OD vocabulary and the metadata facets; only the embedding legs differ.
+# (768) / ~5.5GB (1152) / ~9.4GB (1536) resident in model weights plus FAISS
+# indices, so holding several in one process would multiply a footprint this
+# project has already trimmed once on purpose (see ARCHITECTURE.md's Signals
+# table on the removed M-CLIP text tower). Run one process per profile on its
+# own port instead -- run_768.bat / run_1152.bat / run_1536.bat. They share
+# Elasticsearch, /media, the OD vocabulary and the metadata facets; only the
+# embedding legs differ. Three at once will not fit in 32GB; two will.
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -63,6 +64,22 @@ _PROFILES = {
         # time; see backend/search/summary.py.
         summary_chunked=True,
         index_sub="1152",  # index/1152/routing101_*
+    ),
+    "1536": dict(
+        dim=1536,
+        model_id="google/siglip2-giant-opt-patch16-384",
+        frame_glob=str(_EXTRACTED / "1536embed" / "1536keyframe" / "*.npy"),
+        asr_dir=_EXTRACTED / "1536embed" / "1536transcript",
+        caption_dir=_EXTRACTED / "1536embed" / "1536caption",
+        summary_embed_dir=_EXTRACTED / "1536embed" / "1536summary",
+        # Chunked for the same reason as 1152 -- this dir's manifest.csv
+        # also says strategy=chunks_separate, and the giant checkpoint's
+        # text tower is still capped at 64 tokens.
+        summary_chunked=True,
+        index_sub="1536",  # index/1536/routing101_*
+        # Unlike 1152, this profile's transcripts cover 859 videos, not 790
+        # -- the upstream L25 ASR gap that 1152 has was filled before this
+        # job ran.
     ),
 }
 if EMBED_PROFILE not in _PROFILES:

@@ -12,6 +12,7 @@ __pycache__/
 *.bat
 !run_768.bat
 !run_1152.bat
+!run_1536.bat
 !_run_common.bat
 !open_when_ready.bat
 !stop_routing101.bat

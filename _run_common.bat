@@ -5,12 +5,12 @@ rem PROFILE and PORT, then `call` this.
 rem
 rem Everything here is profile-independent on purpose -- one Docker check,
 rem one Elasticsearch container, one uvicorn invocation -- so a fix to the
-rem bootstrap lands for both profiles at once instead of being copy-pasted
-rem into two launchers and drifting.
+rem bootstrap lands for every profile at once instead of being copy-pasted
+rem into one launcher per profile and drifting.
 
 if "%PROFILE%"=="" (
     echo _run_common.bat is not meant to be run directly.
-    echo Use run_768.bat or run_1152.bat instead.
+    echo Use run_768.bat, run_1152.bat or run_1536.bat instead.
     exit /b 1
 )
 

@@ -4,15 +4,15 @@ Multi-signal text-to-keyframe retrieval over the AIC video corpus (873
 videos / ~177k keyframes), plus an AIC-submission CSV export flow. One
 FastAPI process serves both the JSON API and the static frontend.
 
-It runs against either of two SigLIP2 embedding profiles -- 768-dim
-(default) or 1152-dim -- chosen at launch; see [Embedding profiles](#embedding-profiles-768-vs-1152).
+It runs against one of three SigLIP2 embedding profiles -- 768-dim
+(default), 1152-dim or 1536-dim -- chosen at launch; see [Embedding profiles](#embedding-profiles).
 
 This file is a **build-and-run guide** — pick your track below and follow
 it top to bottom. For how the system actually works (layout, signals,
 export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
 
 - [Prerequisites](#prerequisites)
-- [Embedding profiles: 768 vs 1152](#embedding-profiles-768-vs-1152)
+- [Embedding profiles](#embedding-profiles)
 - [Track A — Run locally](#track-a--run-locally)
 - [Track B — Run on Kaggle](#track-b--run-on-kaggle)
 - [Verifying it's working](#verifying-its-working)
@@ -49,20 +49,26 @@ export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
   AICDataExtracted/summary_embed/                   summary embeddings (app fills this itself)
   ```
 
-  Embeddings for the **1152-dim** profile — only needed if you want to run
-  it; the app is fully usable without them:
+  Embeddings for the **1152-dim** and **1536-dim** profiles — only needed
+  if you want to run one of them; the app is fully usable without them.
+  Identical layout, one folder per dimension:
 
   ```
   AICDataExtracted/1152embed/1152keyframe/          frame embeddings
   AICDataExtracted/1152embed/1152transcript/        ASR-segment embeddings + .csv
   AICDataExtracted/1152embed/1152caption/           caption embeddings + .csv
   AICDataExtracted/1152embed/1152summary/           summary embeddings (chunked) + .csv
+
+  AICDataExtracted/1536embed/1536keyframe/          frame embeddings
+  AICDataExtracted/1536embed/1536transcript/        ASR-segment embeddings + .csv
+  AICDataExtracted/1536embed/1536caption/           caption embeddings + .csv
+  AICDataExtracted/1536embed/1536summary/           summary embeddings (chunked) + .csv
   ```
 
   `summary_embed/` and `index/` are write targets too (the app creates/
   fills them itself on first run) -- just make sure the parent directory
-  is writable. `1152embed/` is read-only: those embeddings come from the
-  upstream pipeline, the app never generates them.
+  is writable. `1152embed/` and `1536embed/` are read-only: those
+  embeddings come from the upstream pipeline, the app never generates them.
 
 - **Elasticsearch 8.x**, reachable at boot. This is not optional even if
   you don't care about fuzzy text search: `backend/main.py`'s startup
@@ -73,32 +79,33 @@ export flow, etc.), see [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.
   per signal. It's only the boot-time existence check that's unguarded.)
   How you get Elasticsearch differs by track, see below.
 
-## Embedding profiles: 768 vs 1152
+## Embedding profiles
 
-The app can run against either of two SigLIP2 checkpoints. You pick one
+The app can run against any one of three SigLIP2 checkpoints. You pick one
 **before the process starts** -- there is no switch inside the UI:
 
-| | `768` (default) | `1152` |
-|---|---|---|
-| Checkpoint | `siglip2-base-patch16-384` | `siglip2-so400m-patch14-384` |
-| Embeddings | `siglib_embed/`, `transcript_embed/`, `caption_embed/`, `summary_embed/` | `1152embed/1152*/` |
-| FAISS indices | `index/routing101_*` | `index/1152/routing101_*` |
-| Port | 8000 | 8001 |
-| Model download | ~1.4 GB | ~4.2 GB |
-| RAM (measured) | ~2.8 GB | ~4-5 GB |
+| | `768` (default) | `1152` | `1536` |
+|---|---|---|---|
+| Checkpoint | `siglip2-base-patch16-384` | `siglip2-so400m-patch14-384` | `siglip2-giant-opt-patch16-384` |
+| Embeddings | `siglib_embed/`, `transcript_embed/`, `caption_embed/`, `summary_embed/` | `1152embed/1152*/` | `1536embed/1536*/` |
+| FAISS indices | `index/routing101_*` | `index/1152/routing101_*` | `index/1536/routing101_*` |
+| Port | 8000 | 8001 | 8002 |
+| Model download | ~1.4 GB | ~4.2 GB | ~7 GB |
+| RAM (measured) | ~2.8 GB | ~4-5 GB | ~9.4 GB |
 
-Selected with the `R101_EMBED` environment variable (`768` or `1152`,
-default `768`), which `backend/config.py` reads once at import. On Windows
-the launcher scripts set it for you -- **`run_768.bat`** and
-**`run_1152.bat`**, both in the repo. On any other platform, set the env
-var yourself; see Track A step 4.
+Selected with the `R101_EMBED` environment variable (`768`, `1152` or
+`1536`, default `768`), which `backend/config.py` reads once at import. On
+Windows the launcher scripts set it for you -- **`run_768.bat`**,
+**`run_1152.bat`** and **`run_1536.bat`**, all in the repo. On any other
+platform, set the env var yourself; see Track A step 4.
 
-The two profiles are separate processes on separate ports, so you can run
-both at once and compare the same query in two tabs -- the coloured pill next to the
-page title says which profile that tab is talking to. Everything that
+Each profile is its own process on its own port, so you can run two at once
+and compare the same query in two tabs -- the coloured pill next to the page
+title says which profile that tab is talking to. Running all three at once
+does not fit in 32 GB; stop one before starting a third. Everything that
 isn't an embedding is shared: one Elasticsearch container, the same
-thumbnails/video, the same export flow. Neither profile can clobber the
-other's indices.
+thumbnails/video, the same export flow. No profile can clobber another's
+indices.
 
 **If you only want the app working, ignore all of this** -- do nothing and
 you get the 768 profile, exactly as before.
@@ -124,8 +131,8 @@ you get the 768 profile, exactly as before.
    embedding profile) rather than as flat module constants; `_EXTRACTED`
    just above it is the single root prefix those entries hang off, so
    retargeting a whole machine is usually one edit to that one line. If
-   you don't have the `1152embed/` folders, leave the `"1152"` entry
-   alone -- an unused profile is never touched.
+   you don't have the `1152embed/` or `1536embed/` folders, leave those
+   entries alone -- an unused profile is never touched.
 
 3. **Start Elasticsearch** (Docker):
    ```
@@ -157,12 +164,13 @@ you get the 768 profile, exactly as before.
    ```
    run_768.bat      768-dim profile  -> http://localhost:8000/app/
    run_1152.bat     1152-dim profile -> http://localhost:8001/app/
+   run_1536.bat     1536-dim profile -> http://localhost:8002/app/
    ```
-   Run both if you want them side by side. `stop_routing101.bat 8000` (or
-   `8001`) stops one without touching Elasticsearch, so the next launch
-   stays fast. Both launchers are four-line wrappers over
-   `_run_common.bat`, which holds the shared bootstrap -- edit that one,
-   not the two.
+   Run two if you want them side by side (all three at once won't fit in
+   32 GB). `stop_routing101.bat 8000` (or `8001`, `8002`) stops one without
+   touching Elasticsearch, so the next launch stays fast. All three
+   launchers are four-line wrappers over `_run_common.bat`, which holds the
+   shared bootstrap -- edit that one, not the three.
 
    Leave the launcher window open while you work; it is the live server
    log. Closing it (or Ctrl+C, then Y) stops the app.
@@ -172,6 +180,7 @@ you get the 768 profile, exactly as before.
    ```
    uvicorn backend.main:app --reload                              # 768, :8000
    R101_EMBED=1152 uvicorn backend.main:app --reload --port 8001  # 1152, :8001
+   R101_EMBED=1536 uvicorn backend.main:app --reload --port 8002  # 1536, :8002
    ```
    First boot loads the SigLIP2 model, builds the FAISS indices, and
    bulk-indexes the four ES fuzzy indices (only the first time -- see
@@ -181,18 +190,20 @@ you get the 768 profile, exactly as before.
    [Troubleshooting](#troubleshooting) on log buffering) but search
    requests will just queue until it's actually done.
 
-   **The 1152 profile's first run is much slower**: it downloads ~4.2 GB
-   of model weights and writes its FAISS indices to `index/1152/` from
-   scratch, which took several minutes on the dev machine. Every run after
-   that loads in ~20s like the 768 one. The startup log prints the profile
-   and per-index vector counts, so you can confirm what you actually got:
+   **The 1152 and 1536 profiles' first runs are much slower**: they
+   download ~4.2 GB and ~7 GB of model weights respectively and write their
+   FAISS indices to `index/1152/` or `index/1536/` from scratch, which took
+   several minutes on the dev machine. Every run after that loads in ~20s
+   like the 768 one. The startup log prints the profile and per-index vector
+   counts, so you can confirm what you actually got:
    ```
    [startup] profile=1152 dim=1152 model=google/siglip2-so400m-patch14-384
    [startup]   177321 frames over 873 videos
    [startup]   2501 chunks over 785 videos
    ```
 
-5. Open **http://localhost:8000/app/** (or `:8001` for the 1152 profile).
+5. Open **http://localhost:8000/app/** (or `:8001` / `:8002` for the 1152
+   and 1536 profiles).
    The pill next to the page title confirms which profile you're on.
 
 `--reload` is convenient but its file-watcher isn't fully reliable in
@@ -226,8 +237,8 @@ Elasticsearch, and no public port for a browser to reach.
    into it on first run, but Kaggle input datasets mount **read-only**, so
    point it at a writable path (e.g. under `/kaggle/working/`) and let it
    fill, or ship the summary embeddings in your dataset and point at them.
-   The 1152 profile only ever reads its summary embeddings, so a read-only
-   mount is fine there.
+   The 1152 and 1536 profiles only ever read their summary embeddings, so
+   a read-only mount is fine there.
 
 3. **Install dependencies** (Kaggle images already have `numpy`/`pandas`/
    `torch`; this just fills in what's missing):
@@ -267,11 +278,11 @@ Elasticsearch, and no public port for a browser to reach.
    ```
    !nohup uvicorn backend.main:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &
    ```
-   Prefix `R101_EMBED=1152` to run the 1152-dim profile instead.
-   Attach the `1152embed/` folders to your dataset first, and
-   expect the longer first boot -- a ~4.2 GB model download plus a from-
-   scratch FAISS build, every session, since Kaggle sessions are
-   ephemeral.
+   Prefix `R101_EMBED=1152` (or `R101_EMBED=1536`) to run one of the other
+   profiles instead. Attach the matching `1152embed/` or `1536embed/`
+   folders to your dataset first, and expect the longer first boot -- a
+   ~4.2 GB or ~7 GB model download plus a from-scratch FAISS build, every
+   session, since Kaggle sessions are ephemeral.
    Running it this way (a real background OS process via `!`, not calling
    `uvicorn.run()` inline in a cell) sidesteps Jupyter's already-running
    event loop entirely -- no `nest_asyncio` dance needed. Poll
@@ -306,9 +317,10 @@ Once you're on `/app/`:
 - A result card's ▶ (playback) and ★ (export) buttons should both open
   without errors -- ▶ needs `AICData/video/*.mp4` + `map-keyframes`
   resolvable, ★ needs `map-keyframes` too.
-- The pill next to the page title reads `768d` or `1152d` and matches the
-  port you opened. If you're comparing profiles in two tabs, check this
-  before trusting either tab's results -- the two look identical otherwise.
+- The pill next to the page title reads `768d`, `1152d` or `1536d` and
+  matches the port you opened. If you're comparing profiles in two tabs,
+  check this before trusting either tab's results -- they look identical
+  otherwise.
 
 ## Troubleshooting
 
@@ -339,7 +351,7 @@ Once you're on `/app/`:
   Elasticsearch.** Elasticsearch isn't reachable at `ES_HOST` -- see the
   Prerequisites section above, this is a hard requirement at boot, not a
   soft one.
-- **`R101_EMBED='...' -- expected one of ['1152', '768']` and the process
+- **`R101_EMBED='...' -- expected one of ['1152', '1536', '768']` and the process
   exits.** Exactly what it says: the env var is set to something that
   isn't a profile name. Unset it for the default.
 - **A FAISS dimension assertion at startup, or every search 500s on one
@@ -347,8 +359,9 @@ Once you're on `/app/`:
   always a `backend/config.py` edit that pointed two profiles at the same
   `summary_embed_dir` or the same `index_sub`. Each profile needs its own
   of both; delete the affected `index/` subtree and let it rebuild.
-- **The 1152 profile starts but a signal covers fewer videos than you
-  expect.** Check the per-index counts in the startup log against the
-  873-video corpus. Its ASR embeddings are incomplete upstream around L25
-  (773 videos indexed as of this writing), which is a data gap, not a bug
-  -- the other signals are complete.
+- **A profile starts but a signal covers fewer videos than you expect.**
+  Check the per-index counts in the startup log against the 873-video
+  corpus. The 1152 profile's ASR embeddings are incomplete upstream around
+  L25 (773 videos indexed as of this writing), which is a data gap, not a
+  bug -- its other signals are complete, and 1536 was embedded after that
+  gap was filled.

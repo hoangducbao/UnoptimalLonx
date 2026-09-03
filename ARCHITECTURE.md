@@ -29,52 +29,56 @@ pipeline/
   build_class_vocab.py  builds the OD class vocabulary od_filter.py matches against
   *.csv                 per-lot metadata extracted upstream (metadata_filter.py's source)
 index/                  generated FAISS indices + CSV metadata (git-ignored), rebuilt on first run
-                        (768 profile at index/routing101_*, 1152 at index/1152/routing101_* -- see Embedding profiles)
+                        (768 profile at index/routing101_*, 1152 and 1536 at index/<dim>/routing101_* -- see Embedding profiles)
 ```
 
 ## Embedding profiles
 
-Two SigLIP2 checkpoints, and therefore two vector dimensions, two sets of
-precomputed `.npy` files, and two FAISS index trees. Picked once from the
+Three SigLIP2 checkpoints, and therefore three vector dimensions, three sets
+of precomputed `.npy` files, and three FAISS index trees. Picked once from the
 `R101_EMBED` environment variable at process start (`backend/config.py`'s
 `_PROFILES`), never from inside the app:
 
-| | `768` (default) | `1152` |
-|---|---|---|
-| Checkpoint | `siglip2-base-patch16-384` | `siglip2-so400m-patch14-384` |
-| Frames | `siglib_embed/` | `1152embed/1152keyframe/` |
-| ASR | `transcript_embed/` | `1152embed/1152transcript/` |
-| Caption | `caption_embed/` | `1152embed/1152caption/` |
-| Summary | `summary_embed/` | `1152embed/1152summary/` |
-| FAISS | `index/routing101_*` | `index/1152/routing101_*` |
-| Resident | ~2.9 GB | ~5.5 GB |
-| Launch | `run_768.bat` → `:8000` | `run_1152.bat` → `:8001` |
+| | `768` (default) | `1152` | `1536` |
+|---|---|---|---|
+| Checkpoint | `siglip2-base-patch16-384` | `siglip2-so400m-patch14-384` | `siglip2-giant-opt-patch16-384` |
+| Frames | `siglib_embed/` | `1152embed/1152keyframe/` | `1536embed/1536keyframe/` |
+| ASR | `transcript_embed/` | `1152embed/1152transcript/` | `1536embed/1536transcript/` |
+| Caption | `caption_embed/` | `1152embed/1152caption/` | `1536embed/1536caption/` |
+| Summary | `summary_embed/` | `1152embed/1152summary/` | `1536embed/1536summary/` |
+| FAISS | `index/routing101_*` | `index/1152/routing101_*` | `index/1536/routing101_*` |
+| Resident | ~2.9 GB | ~5.5 GB | ~9.4 GB |
+| Launch | `run_768.bat` → `:8000` | `run_1152.bat` → `:8001` | `run_1536.bat` → `:8002` |
 
-Separate processes on separate ports (`run_768.bat` / `run_1152.bat`, thin
-wrappers over the shared `_run_common.bat` bootstrap; non-Windows sets
-`R101_EMBED` directly), so both can run at once and answer
+One process per profile on its own port (`run_768.bat` / `run_1152.bat` /
+`run_1536.bat`, thin wrappers over the shared `_run_common.bat` bootstrap;
+non-Windows sets `R101_EMBED` directly), so two can run at once and answer
 the same query in two tabs; the header pill (`/api/profile` →
-`frontend/js/app.js`) says which one a tab is talking to, since the two are
-otherwise identical on screen. **Not** a runtime switch: at ~5.5GB for the
-1152 profile alone, holding both in one process would roughly double a
-footprint this system has already trimmed once on purpose (see the Keyframe
-row in Signals below, on the removed M-CLIP text tower).
+`frontend/js/app.js`) says which one a tab is talking to, since they are
+otherwise identical on screen. **Not** a runtime switch: at ~5.5GB for 1152
+and ~8GB for 1536, holding several in one process would multiply a footprint
+this system has already trimmed once on purpose (see the Keyframe row in
+Signals below, on the removed M-CLIP text tower). Measured resident is the
+working set; 1536's private commit runs ~2x that (~20GB), so on a 32GB box
+pair 1536 with 768 rather than with 1152, and never run all three.
 
 Everything that isn't an embedding is shared and never duplicated per
-dimension: the four Elasticsearch indices (verified: the 1152 transcript
-segment ids match `transcripts/*.csv` exactly, so both profiles' embedding
-legs key on the same `segment_id` space the fuzzy legs do), `map-keyframes`,
+dimension: the four Elasticsearch indices (verified: the 1152 and 1536
+transcript segment ids match `transcripts/*.csv` exactly, so every profile's
+embedding legs key on the same `segment_id` space the fuzzy legs do), `map-keyframes`,
 thumbnails, video, the OD vocabulary, the metadata facets, and the whole
 export flow.
 
 Two profile-shaped differences in the data itself, both handled in the
 search modules rather than by reshaping the files:
 
-- **ASR** — the 1152 transcript CSVs are segment-only, with no `frame_id`
-  column. `build_siglip_asr_index()` falls back to
+- **ASR** — the 1152 and 1536 transcript CSVs are segment-only, with no
+  `frame_id` column. `build_siglip_asr_index()` falls back to
   `nearest_keyframe_n_by_time()`, the same resolution the ES fuzzy leg has
-  always used, applied once at build time.
-- **Summary** — the 1152 summaries are embedded chunk-by-chunk
+  always used, applied once at build time. Coverage differs by profile: 1152
+  is missing ASR embeddings around L25 and reaches 773 of the corpus's 873
+  videos, while 1536 was embedded after that gap was filled.
+- **Summary** — the 1152 and 1536 summaries are embedded chunk-by-chunk
   (`chunks_separate`: 2501 chunks over 785 videos) rather than one vector
   per summary, because SigLIP2's text tower only sees 64 tokens and a
   summary runs well past that — the 768 profile silently truncated most of
