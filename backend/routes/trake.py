@@ -15,7 +15,11 @@ from pydantic import BaseModel
 
 from .. import config
 from ..common import parse_lot_range, thumbnail_url
-from ..models import siglip2_truncation_warning
+try:
+    from ..models import siglip2_truncation_warning
+except ImportError:
+    def siglip2_truncation_warning(text: str):
+        return None
 from ..search import trake as trake_mod
 
 router = APIRouter()
