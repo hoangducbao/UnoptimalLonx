@@ -16,7 +16,12 @@ from .. import config
 from .. import metadata_filter as md
 from .. import od_filter as od
 from ..common import apply_filters, df_to_results, parse_lot_range
-from ..models import is_image_query, siglip2_truncation_warning
+try:
+    from ..models import is_image_query, siglip2_truncation_warning
+except ImportError:
+    from ..models import is_image_query
+    def siglip2_truncation_warning(text: str):
+        return None
 from ..search import asr as asr_mod
 from ..search import caption as cap_mod
 from ..search import keyframe as kf
