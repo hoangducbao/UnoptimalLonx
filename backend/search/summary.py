@@ -68,6 +68,8 @@ def build_siglip_summary_index():
             vecs = l2_normalize(np.load(npy_path))
             if vecs.ndim == 1:
                 vecs = vecs.reshape(1, -1)
+            if vecs.shape[1] != config.EMBED_DIM:
+                continue
             if config.SUMMARY_CHUNKED:
                 # One vector per chunk of the summary, each with its own text
                 # in the sibling {video_id}.csv -- so a hit can show the

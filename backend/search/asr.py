@@ -42,6 +42,10 @@ def build_siglip_asr_index():
                     continue
                 frames_path = found[0]
             vecs = l2_normalize(np.load(npy_path))
+            if vecs.ndim == 1:
+                vecs = vecs.reshape(1, -1)
+            if vecs.shape[1] != config.EMBED_DIM:
+                continue
             frames = pd.read_csv(frames_path)
             if len(frames) != vecs.shape[0]:
                 continue
